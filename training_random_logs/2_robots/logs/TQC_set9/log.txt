@@ -1,0 +1,69 @@
+Logging to training_random_logs/2_robots/logs/TQC_set9
+----------------------------------
+| rollout/           |           |
+|    ep_len_mean     | 756       |
+|    ep_rew_mean     | -1.45e+07 |
+| time/              |           |
+|    episodes        | 11        |
+|    fps             | 165       |
+|    time_elapsed    | 60        |
+|    total_timesteps | 10000     |
+| train/             |           |
+|    actor_loss      | 1.06e+09  |
+|    critic_loss     | 7.03e+06  |
+|    ent_coef        | 7.1e+06   |
+|    ent_coef_loss   | -889      |
+|    learning_rate   | 0.0064    |
+|    n_updates       | 2474      |
+----------------------------------
+----------------------------------
+| rollout/           |           |
+|    ep_len_mean     | 859       |
+|    ep_rew_mean     | -1.68e+07 |
+| time/              |           |
+|    episodes        | 19        |
+|    fps             | 163       |
+|    time_elapsed    | 122       |
+|    total_timesteps | 20000     |
+| train/             |           |
+|    actor_loss      | 3.95e+15  |
+|    critic_loss     | 1.84e+15  |
+|    ent_coef        | 6.32e+13  |
+|    ent_coef_loss   | -1.8e+03  |
+|    learning_rate   | 0.0064    |
+|    n_updates       | 4974      |
+----------------------------------
+---------------------------------
+| rollout/           |          |
+|    ep_len_mean     | 914      |
+|    ep_rew_mean     | -1.8e+07 |
+| time/              |          |
+|    episodes        | 31       |
+|    fps             | 163      |
+|    time_elapsed    | 183      |
+|    total_timesteps | 30000    |
+| train/             |          |
+|    actor_loss      | 3.5e+22  |
+|    critic_loss     | 1.64e+22 |
+|    ent_coef        | 5.61e+20 |
+|    ent_coef_loss   | -2.7e+03 |
+|    learning_rate   | 0.0064   |
+|    n_updates       | 7474     |
+---------------------------------
+----------------------------------
+| rollout/           |           |
+|    ep_len_mean     | 931       |
+|    ep_rew_mean     | -1.84e+07 |
+| time/              |           |
+|    episodes        | 39        |
+|    fps             | 162       |
+|    time_elapsed    | 245       |
+|    total_timesteps | 40000     |
+| train/             |           |
+|    actor_loss      | 3.11e+29  |
+|    critic_loss     | 1.45e+29  |
+|    ent_coef        | 4.99e+27  |
+|    ent_coef_loss   | -3.59e+03 |
+|    learning_rate   | 0.0064    |
+|    n_updates       | 9974      |
+----------------------------------

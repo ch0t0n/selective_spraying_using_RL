@@ -1,3 +1,5 @@
+import json
+import itertools
 import yaml
 import numpy as np
 from stable_baselines3 import A2C, PPO, DQN
@@ -67,3 +69,57 @@ def decode_action(action):
 def filter_args(args, model):
     model_kwargs = inspect.getfullargspec(model).args
     return {k:args[k] for k in args if k in model_kwargs}
+
+# Function to check if a point is inside a polygon (Ray-casting algorithm)
+def is_inside_polygon(point, poly):
+    x, y = point
+    inside = False
+    n = len(poly)
+    p1x, p1y = poly[0]
+    for i in range(n + 1):
+        p2x, p2y = poly[i % n]
+        if min(p1y, p2y) < y <= max(p1y, p2y) and x <= max(p1x, p2x):
+            if p1y != p2y:
+                xinters = (y - p1y) * (p2x - p1x) / (p2y - p1y) + p1x
+            if p1x == p2x or x <= xinters:
+                inside = not inside
+        p1x, p1y = p2x, p2y
+    return inside
+
+# Function to return minimum distance in a list of points
+def compute_min_dist(x):
+    x = np.array(x).astype('float32')
+    dists = []
+    for p1, p2 in itertools.combinations(x, 2):
+        dist = np.linalg.norm(p1-p2)
+        dists.append(dist)
+    return float(np.min(dists))
+
+# Load experiment json file
+def load_experiment_dict_json(json_path):
+    with open(json_path, "r") as f:
+        data = json.load(f)
+    for set_name, cfg in data.items():
+        # Convert field to list of tuples
+        cfg["field"] = [tuple(p) for p in cfg["field"]]
+        # Convert init_positions to NumPy arrays
+        cfg["init_positions"] = [np.array(p, dtype=float) for p in cfg["init_positions"]]
+        # Convert infected_locations to set of tuples
+        cfg["infected_locations"] = [tuple(p) for p in cfg["infected_locations"]]
+    return data
+
+# =========================
+# STDOUT / STDERR REDIRECT
+# =========================
+class Tee:
+    def __init__(self, *files):
+        self.files = files
+
+    def write(self, obj):
+        for f in self.files:
+            f.write(obj)
+            f.flush()
+
+    def flush(self):
+        for f in self.files:
+            f.flush()

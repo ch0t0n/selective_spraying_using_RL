@@ -1,0 +1,35 @@
+Logging to training_random_logs/3_robots/logs/TQC_set4
+----------------------------------
+| rollout/           |           |
+|    ep_len_mean     | 26.2      |
+|    ep_rew_mean     | -2.38e+05 |
+| time/              |           |
+|    episodes        | 219       |
+|    fps             | 144       |
+|    time_elapsed    | 69        |
+|    total_timesteps | 10000     |
+| train/             |           |
+|    actor_loss      | 1.06e+05  |
+|    critic_loss     | 3.82e+03  |
+|    ent_coef        | 61.1      |
+|    ent_coef_loss   | 0.553     |
+|    learning_rate   | 0.0064    |
+|    n_updates       | 2474      |
+----------------------------------
+----------------------------------
+| rollout/           |           |
+|    ep_len_mean     | 21.3      |
+|    ep_rew_mean     | -1.11e+05 |
+| time/              |           |
+|    episodes        | 803       |
+|    fps             | 141       |
+|    time_elapsed    | 141       |
+|    total_timesteps | 20000     |
+| train/             |           |
+|    actor_loss      | 9.77e+04  |
+|    critic_loss     | 3.37e+03  |
+|    ent_coef        | 47.6      |
+|    ent_coef_loss   | 1.35      |
+|    learning_rate   | 0.0064    |
+|    n_updates       | 4974      |
+----------------------------------

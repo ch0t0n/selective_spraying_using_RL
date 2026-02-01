@@ -1,0 +1,52 @@
+Logging to training_random_logs/3_robots/logs/TQC_set10
+----------------------------------
+| rollout/           |           |
+|    ep_len_mean     | 146       |
+|    ep_rew_mean     | -2.09e+06 |
+| time/              |           |
+|    episodes        | 64        |
+|    fps             | 157       |
+|    time_elapsed    | 63        |
+|    total_timesteps | 10000     |
+| train/             |           |
+|    actor_loss      | 9.47e+04  |
+|    critic_loss     | 3.12e+03  |
+|    ent_coef        | 73.9      |
+|    ent_coef_loss   | -2.6      |
+|    learning_rate   | 0.0064    |
+|    n_updates       | 2474      |
+----------------------------------
+----------------------------------
+| rollout/           |           |
+|    ep_len_mean     | 58.7      |
+|    ep_rew_mean     | -1.58e+05 |
+| time/              |           |
+|    episodes        | 198       |
+|    fps             | 153       |
+|    time_elapsed    | 130       |
+|    total_timesteps | 20000     |
+| train/             |           |
+|    actor_loss      | 5.17e+04  |
+|    critic_loss     | 2.91e+03  |
+|    ent_coef        | 64.9      |
+|    ent_coef_loss   | -1.7      |
+|    learning_rate   | 0.0064    |
+|    n_updates       | 4974      |
+----------------------------------
+----------------------------------
+| rollout/           |           |
+|    ep_len_mean     | 66.3      |
+|    ep_rew_mean     | -1.13e+05 |
+| time/              |           |
+|    episodes        | 361       |
+|    fps             | 151       |
+|    time_elapsed    | 198       |
+|    total_timesteps | 30000     |
+| train/             |           |
+|    actor_loss      | 3.79e+04  |
+|    critic_loss     | 2.94e+03  |
+|    ent_coef        | 41.5      |
+|    ent_coef_loss   | -2.42     |
+|    learning_rate   | 0.0064    |
+|    n_updates       | 7474      |
+----------------------------------

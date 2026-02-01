@@ -1,0 +1,19 @@
+Logging to training_random_logs/3_robots/logs/TRPO_set10
+-----------------------------------------
+| rollout/                  |           |
+|    ep_len_mean            | 132       |
+|    ep_rew_mean            | -4.48e+05 |
+| time/                     |           |
+|    fps                    | 31        |
+|    time_elapsed           | 320       |
+|    total_timesteps        | 10000     |
+| train/                    |           |
+|    explained_variance     | 0         |
+|    is_line_search_success | 1         |
+|    kl_divergence_loss     | 0.00627   |
+|    learning_rate          | 0.0013    |
+|    n_updates              | 1         |
+|    policy_objective       | 0.0645    |
+|    std                    | 0.998     |
+|    value_loss             | 3.53e+09  |
+-----------------------------------------

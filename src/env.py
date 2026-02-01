@@ -1,224 +1,174 @@
 import copy
 import pygame
 import gymnasium as gym
-from gymnasium import spaces
-from shapely import Polygon
-from shapely.geometry import Point
 import numpy as np
-from src.utils import binary_list_to_decimal, decode_action
-from itertools import product
+from src.utils import is_inside_polygon, compute_min_dist
 
-# The agricultural field environment
-class ThreeAgentGridworldEnv(gym.Env):
+class MultiRobotEnv(gym.Env):
     metadata = {'render_modes': ['human', 'print', 'rgb_array'], "render_fps": 4}    
-    def __init__(self, seed=None, render_mode=None, env_config=None):
-        super(ThreeAgentGridworldEnv, self).__init__()
-        self.config = copy.deepcopy(env_config)
-        self.poly_vertices = self.config['field']
-        self.Poly = Polygon(self.poly_vertices) # Get the points of the polygon
-        self.window_size = 800  # The size of the PyGame window        
-        self.grid_size = self.config['grid_size'] # Size of the grid
-        self.outer_boundary = self.Poly.buffer(distance=2) # outer boundary with buffer of distance 2
+    def __init__(self, field_info, render_mode=None, wind_par=[0,0], num_robots=3, render_scale=10):
+        super().__init__()
 
-        # Observation points
-        self.observation_points = self.obs_points()
-        self.observation_length = len(self.observation_points)
-        self.observation_map = {tuple(v):i for i,v in enumerate(self.observation_points)}
-
-        # Keep track of visited states and count steps
-        self.step_count = 0
-        self.visited = set()
-        self.infected_locations = self.config['infected_locations']
-        
-        self.infected_length = len(self.infected_locations)
-        self.infected_state_length = 2**10 # 10 weeds max, binary to decimal
-        self.infected_dict = {v:0 for v in self.infected_locations} # dictionary of locations
-        
-        # Action and observation space
-        self.action_space = spaces.Discrete(5 ** 3)  # 5 possible actions for 3 agents
-        self.observation_space = spaces.MultiDiscrete([self.observation_length, self.observation_length, self.observation_length, self.infected_state_length])
-        
-        assert render_mode is None or render_mode in self.metadata["render_modes"] # Check if the render mode is correct
+        # Screen, rendering (simulation) and field parameters
+        self.field_info = copy.deepcopy(field_info)
+        self.render_scale = render_scale # Scaling factor for rendering only 
+        self.poly_vertices = self.field_info['field']  # Physics coordinates
+        self.xs, self.ys = zip(*self.field_info['field']) # x and y values of the vertices of the polygonal field
+        self.WIDTH, self.HEIGHT = max(self.xs) + 10, max(self.ys) + 10 # Boundary above the max values
+        assert render_mode is None or render_mode in self.metadata["render_modes"] # Check valid render modes
         self.render_mode = render_mode
-        # If human-rendering is used, `self.window` will be a reference
-        # to the window that we draw to. `self.clock` will be a clock that is used
-        # to ensure that the environment is rendered at the correct framerate in
-        # human-mode. They will remain `None` until human-mode is used for the
-        # first time.
-        self.window = None
+        self.screen = None
         self.clock = None
 
-        # Reset the environment and start
-        self.reset(seed=seed)
+        # Robot parameters
+        self.num_robots = num_robots
+        self.robot_size = 2
+        self.mass = 1.0
+        self.thrust_power = 0.5 # Force applied per action
+        self.max_speed = 5
+        self.min_speed = -5
+        self.init_robot_positions = np.array(self.field_info['init_positions'])[:self.num_robots]
+        self.init_robot_capacities = np.array(self.field_info['robot_capacities'][:self.num_robots], dtype=np.float32)
+        self.max_capacity = np.max(self.init_robot_capacities)
+        self.wind_f_a, self.wind_beta_a = wind_par # Wind parameters: magnitude and angle
 
-    def obs_points(self):
-        xs = np.arange(0, 100, 1)
-        ys = np.arange(0, 100, 1)
-        obs_points = list(product(xs, ys))
-        return obs_points
-    
+        # Infected locations with levels
+        self.init_infected_locations = [(np.array([x, y]), level) for x, y, level in self.field_info['infected_locations']]
+        self.max_infection_level = max(lvl for _, lvl in self.init_infected_locations)
+        self.infected_radius = 5
+        self.spray_sigma = self.infected_radius / 2.0
+        self.n_infected = len(self.init_infected_locations)
+        
+        # Action space (ax, ay, spray) and Observation space (x, y, vx, vy, inf_loc): position and velocity for each robot and infected location
+        self.action_space = gym.spaces.Box(
+            low=np.array([[-1.0, -1.0, 0.0]] * self.num_robots),
+            high=np.array([[1.0, 1.0, 1.0]] * self.num_robots), dtype=np.float32
+        )
+        self.observation_space = gym.spaces.Box(
+            low=np.concatenate((
+                np.zeros(self.num_robots * 2),                # (x, y) co-ordinates of each robot
+                np.full(self.num_robots * 2, self.min_speed), # (v_x, v_y) velocities along x and y axis of each robot
+                np.zeros(self.num_robots), # robot spraying capacities
+                np.zeros(self.n_infected)  # infection levels of each infected locations
+            )),
+            high=np.concatenate((
+                np.tile([self.WIDTH, self.HEIGHT], self.num_robots), # (x, y) co-ordinates of each robot
+                np.full(self.num_robots * 2, self.max_speed), # (v_x, v_y) velocities along x and y axis of each robot
+                np.full(self.num_robots, self.max_capacity), # Full capacity for all robots
+                np.ones(self.n_infected) # infection levels of each infected locations
+            )), dtype=np.float32
+        )
+        
+        self.reset() # Reset environment and start
+
     def _get_obs(self):
-        a1, a2, a3 = self.agent_positions[0], self.agent_positions[1], self.agent_positions[2]
-        info = {'agent1': a1, 'agent2': a2, 'agent3': a3, 'step_count': self.step_count}
-        p1,p2,p3 = self.observation_map[tuple(a1)], self.observation_map[tuple(a2)], self.observation_map[tuple(a3)]
-        infected = binary_list_to_decimal(list(self.infected_dict.values()))
-        state = np.array([p1,p2,p3,infected]) # convert the infected binary list to decimal
+        info = {f'robot{i}': {'position': self.robot_positions[i], 'capacity': self.robot_capacities[i]}
+                    for i in range(self.num_robots)}
+        infection_levels = np.array([lvl / self.max_infection_level 
+                                     for _, lvl in self.infected_locations], dtype=np.float32) # Normalized infection levels for infected locations
+        state = np.concatenate((self.robot_positions.flatten(), self.robot_velocities.flatten(),
+                                self.robot_capacities, infection_levels), dtype=np.float32)
         return state, info
 
     def reset(self, seed=None, options={}):
         super().reset(seed=seed)
-        self.visited = set()
-        self.step_count = 0
-        self.infected_locations = copy.deepcopy(self.config['infected_locations'])
-        self.infected_dict = {v:0 for v in self.infected_locations} # 0 for unvisited infected locations, 1 for visited
-        self.agent_positions = copy.deepcopy(self.config['init_positions'])
+        self.robot_positions = copy.deepcopy(self.init_robot_positions) # Initial robot locations
+        self.robot_velocities = np.zeros((self.num_robots, 2), dtype=np.float32) # Initial velocities of each robot (zero)
+        self.robot_capacities = copy.deepcopy(self.init_robot_capacities) # Initial robot capacities
+        self.infected_locations = copy.deepcopy(self.init_infected_locations) # Initial infected locations
+        self.visited = set() # Keep track of visited states
         return self._get_obs()
 
-    def step(self, action):
-        # Placeholder for terminal state and rewards
+    def step(self, actions):
         terminated, truncated = False, False
         rewards = 0
-        self.step_count += 1
+        for i in range(self.num_robots): # For every robot
+            ax, ay, spray = actions[i] # Get the position and spray levels for the robot
 
-        # Define the movements corresponding to each action
-        movements = [(-1, 0), (1, 0), (0, -1), (0, 1), (0, 0)]  # up, down, left, right, none
-        
-        # Update the positions of both agents
-        decoded_action = decode_action(action)
-        for i, act in enumerate(decoded_action):
+            # ----- Gaussian area spray -----
+            if spray > 0 and self.robot_capacities[i] > 0: # Check spraying level
+                for idx, (loc, level) in enumerate(self.infected_locations): # Check each infected location
+                    dist = np.linalg.norm(self.robot_positions[i] - loc) # Distance between robot and infected location
+                    if dist <= self.infected_radius and level > 0: # If the distance is within infected radius
+                        w = np.exp(-(dist ** 2) / (2 * self.spray_sigma ** 2)) # Gaussian spray value
+                        applied = min(spray * w, self.robot_capacities[i], level) # Take the minimum of (spray_amount, robot_capacity, infection level)
+                        self.robot_capacities[i] -= applied # Reduce the robot capacity
+                        self.infected_locations[idx] = (loc, level - applied) # Updated the spraying level
+                        rewards += 2000.0 * applied
 
-            movement = movements[act] # What movement to take
-            new_position = self.agent_positions[i] + movement # New position after movement
-            
-            # Ensure the new position is within bounds
-            new_p = Point(new_position[0], new_position[1])
-            if self.Poly.contains(new_p):
-                self.agent_positions[i] = new_position
+            # Movement by robot dynamics
+            ax, ay = ax * self.thrust_power, ay * self.thrust_power
+            self.robot_velocities[i, 0] += ax / self.mass + self.wind_f_a * np.cos(np.radians(self.wind_beta_a))
+            self.robot_velocities[i, 1] += ay / self.mass + self.wind_f_a * np.sin(np.radians(self.wind_beta_a))
+            self.robot_velocities[i] = np.clip(self.robot_velocities[i], self.min_speed, self.max_speed)
+
+            # Check new position and update visiteds states
+            new_position = self.robot_positions[i] + self.robot_velocities[i]
+            if not is_inside_polygon(new_position, self.poly_vertices): # If new position is outside the field
+                rewards -= 10000 # Big negative reward for going outside the field
+                self.robot_velocities[i][:] = 0
             else:
-                rewards -= 10
-            if tuple(new_position) in self.visited:
-                rewards -= 10
+                self.robot_positions[i] = new_position
+            pos_key = tuple(np.round(self.robot_positions[i], 1))
+            if pos_key in self.visited: # If current location is visited previously
+                rewards -= 100 # Small negative reward for visiting same state
             else:
-                rewards -= 1
-            self.visited.add(tuple(new_position))
-        
-        # Check if an infected location is visited
-        # TODO: Should we make a dedicated action for removing the weed instead of doing it automatically?
-        # TODO: Perhaps adding a cost of removing the weed since real drones will have limited herbicide and should be discouraged from wasting it
-        infected_visited = [x for x in self.agent_positions if tuple(x) in self.infected_locations] # If infected cells are visited
-        for v in infected_visited:
-            if tuple(v) in self.infected_locations:
-                self.infected_locations.remove(tuple(v))
-                self.infected_dict[tuple(v)] = 1
-        
-        if infected_visited:
-            rewards += 100 * len(infected_visited) 
+                rewards -= 10 # Very small negative reward for visiting new state
+            self.visited.add(pos_key)
 
-        if sum(list(self.infected_dict.values()))==self.infected_length:
-            rewards += 100000
+        if all(level <= 0.01 for _, level in self.infected_locations): # If all infected locations are cleared
+            rewards += 100000 # Very big reward for visiting all infected locations and terminate
             terminated = True
 
-        
-        # If the agents meet at the same position, we can assign a reward or consider it a terminal state
-        if np.array_equal(self.agent_positions[0], self.agent_positions[1]) or np.array_equal(self.agent_positions[0], self.agent_positions[2]) or np.array_equal(self.agent_positions[1], self.agent_positions[2]):
-            rewards -= 100000  # Infinity reward for meeting at the same position
-            terminated = True
-        
+        if self.num_robots > 1:
+            min_dist_between_robots = compute_min_dist(self.robot_positions)
+            if min_dist_between_robots < self.robot_size: # Check if any collisions occured
+                rewards = -100000 # Very big negative reward for collisions and terminate
+                terminated = True
+
         obs, info = self._get_obs()
         return obs, rewards, terminated, truncated, info
 
     def render(self):
-        if self.render_mode == 'print':
-            grid = np.zeros((self.grid_size, self.grid_size))
-            grid[tuple(self.agent_positions[0])] = 1  # Mark the position of the first agent
-            grid[tuple(self.agent_positions[1])] = 2  # Mark the position of the second agent
-            print(grid)
-        else:
-            if self.window is None and self.render_mode == "human": # Initialize pygame if it is not initialized
-                pygame.init()
-                pygame.display.init()
-                self.window = pygame.display.set_mode(
-                    (self.window_size, self.window_size)
-                )
-            if self.clock is None and self.render_mode == "human":
+        if self.screen is None and self.render_mode == "human":
+            pygame.init()
+            pygame.display.init()
+            self.screen = pygame.display.set_mode((self.WIDTH*self.render_scale, self.HEIGHT*self.render_scale))
+            pygame.display.set_caption("Multi-robot RL Environment")
+            if self.clock is None:
                 self.clock = pygame.time.Clock()
-            
-            # Fill the canvas
-            canvas = pygame.Surface((self.window_size, self.window_size))
-            canvas.fill((255, 255, 255))
-            pix_square_size = (
-                self.window_size / self.grid_size
-            )  # The size of a single grid square in pixels
+                self.running = True
 
-            # Draw the polygon
-            pixel_poly_vertices = [(point[0] * pix_square_size, point[1] * pix_square_size) for point in self.poly_vertices]
-            pygame.draw.polygon(surface=canvas, 
-                                color=(255, 255, 0), 
-                                points=pixel_poly_vertices)
-            
-            # Draw the visited regions
-            for p in self.visited:
-                pygame.draw.rect(
-                canvas,
-                pygame.Color(100, 100, 100, a=0.5),
-                pygame.Rect(
-                    pix_square_size * np.array(p),
-                    (pix_square_size, pix_square_size),
-                ),
-                )
-            # Draw agent1 (square)
-            pygame.draw.rect(
-                canvas,
-                (255, 0, 0),
-                pygame.Rect(
-                    pix_square_size * self.agent_positions[0],
-                    (pix_square_size, pix_square_size),
-                ),
-            )
-            # Draw agent2 (circle)
-            pygame.draw.circle(
-                canvas,
-                (0, 0, 255),
-                (self.agent_positions[1] + 0.5) * pix_square_size,
-                pix_square_size / 3,
-            )
-            # Draw agent3 (circle)
-            pygame.draw.circle(
-                canvas,
-                (0, 255, 0),
-                (self.agent_positions[2] + 0.5) * pix_square_size,
-                pix_square_size / 3,
-            )
-            # Draw infected locations
-            for l in self.infected_locations:
-                pygame.draw.rect(
-                    canvas,
-                    (0, 255, 255),
-                    pygame.Rect(
-                        pix_square_size * np.array(l),
-                        (pix_square_size, pix_square_size),
-                    ),
-                )
+        self.screen.fill((255, 255, 255))
+        colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 128, 0),
+                  (128, 0, 255), (255, 0, 255), (128, 128, 128)]
+        pix_size = 10
 
+        # Draw polygon scaled
+        scaled_poly = [(x*self.render_scale, y*self.render_scale) for x, y in self.poly_vertices]
+        pygame.draw.polygon(surface=self.screen, color=(255, 255, 0), points=scaled_poly)
 
-            if self.render_mode == "human":
-                # The following line copies our drawings from `canvas` to the visible window
-                self.window.blit(canvas, canvas.get_rect())
-                pygame.event.pump()
-                pygame.display.update()
+        # Draw visited points scaled
+        for point in self.visited:
+            scaled_point = (int(point[0]*self.render_scale), int(point[1]*self.render_scale))
+            pygame.draw.circle(self.screen, pygame.Color(100, 100, 100, a=0.2), scaled_point, pix_size//2)
 
-                # We need to ensure that human-rendering occurs at the predefined framerate.
-                # The following line will automatically add a delay to keep the framerate stable.
-                self.clock.tick(self.metadata["render_fps"])
-                # Finally
-                pygame.event.get()
+        # Draw robots scaled
+        for i in range(self.num_robots):
+            scaled_pos = (int(self.robot_positions[i][0]*self.render_scale), int(self.robot_positions[i][1]*self.render_scale))
+            pygame.draw.circle(self.screen, colors[i], scaled_pos, pix_size//2)
 
-            elif self.render_mode == 'rgb_array':  # rgb_array
-                return np.transpose(
-                    np.array(pygame.surfarray.pixels3d(canvas)), axes=(1, 0, 2)
-                )
-            
+        # Draw infected locations scaled
+        for loc, level in self.infected_locations:
+            intensity = int(255 * min(level/5.0, 1.0))
+            scaled_loc = (int(loc[0]*self.render_scale), int(loc[1]*self.render_scale))
+            pygame.draw.circle(self.screen, (0, intensity, 255), scaled_loc, 6)
+
+        pygame.display.flip()
+        self.clock.tick(60)
+
     def close(self):
-        if self.window is not None:
+        if self.screen is not None:
             pygame.display.quit()
             pygame.quit()
+

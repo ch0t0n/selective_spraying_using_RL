@@ -1,9 +1,7 @@
 import gymnasium as gym
-from src.env import ThreeAgentGridworldEnv
+from src.env import MultiRobotEnv
 
-# Register the environment
-gym.envs.registration.register(
-    id='ThreeAgentGridworld-v1',
-    entry_point=ThreeAgentGridworldEnv,
-    max_episode_steps=2000,
-)
+# Register environment
+gym.register(id='MultiRobotEnv-v0', 
+             entry_point=MultiRobotEnv,
+             max_episode_steps=1000)

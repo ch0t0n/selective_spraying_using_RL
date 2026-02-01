@@ -1,0 +1,55 @@
+Logging to training_random_logs/3_robots/logs/TRPO_set5
+-----------------------------------------
+| rollout/                  |           |
+|    ep_len_mean            | 82.4      |
+|    ep_rew_mean            | -3.71e+05 |
+| time/                     |           |
+|    fps                    | 1347      |
+|    time_elapsed           | 7         |
+|    total_timesteps        | 10000     |
+| train/                    |           |
+|    explained_variance     | 5.96e-08  |
+|    is_line_search_success | 1         |
+|    kl_divergence_loss     | 0.00576   |
+|    learning_rate          | 0.0013    |
+|    n_updates              | 1         |
+|    policy_objective       | 0.0614    |
+|    std                    | 1         |
+|    value_loss             | 5.36e+09  |
+-----------------------------------------
+-----------------------------------------
+| rollout/                  |           |
+|    ep_len_mean            | 60.2      |
+|    ep_rew_mean            | -2.21e+05 |
+| time/                     |           |
+|    fps                    | 1348      |
+|    time_elapsed           | 14        |
+|    total_timesteps        | 20000     |
+| train/                    |           |
+|    explained_variance     | -2.38e-07 |
+|    is_line_search_success | 1         |
+|    kl_divergence_loss     | 0.00489   |
+|    learning_rate          | 0.0013    |
+|    n_updates              | 2         |
+|    policy_objective       | 0.0533    |
+|    std                    | 0.996     |
+|    value_loss             | 3.83e+09  |
+-----------------------------------------
+-----------------------------------------
+| rollout/                  |           |
+|    ep_len_mean            | 55.3      |
+|    ep_rew_mean            | -1.94e+05 |
+| time/                     |           |
+|    fps                    | 147       |
+|    time_elapsed           | 203       |
+|    total_timesteps        | 30000     |
+| train/                    |           |
+|    explained_variance     | -2.38e-07 |
+|    is_line_search_success | 1         |
+|    kl_divergence_loss     | 0.00496   |
+|    learning_rate          | 0.0013    |
+|    n_updates              | 3         |
+|    policy_objective       | 0.0402    |
+|    std                    | 0.984     |
+|    value_loss             | 3.39e+09  |
+-----------------------------------------

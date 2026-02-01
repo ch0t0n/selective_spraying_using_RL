@@ -1,0 +1,138 @@
+Logging to training_random_logs/2_robots/logs/TQC_set4
+Using cpu device
+Training started on Tue Jan 27 16:14:15 2026
+Experiment configuration: {'algorithm': 'TQC', 'set': 4, 'verbose': 1, 'steps': 1000000, 'num_robots': 2, 'num_envs': 4, 'seed': 33, 'log_steps': 10000, 'resume': False, 'device': 'cpu'}
+----------------------------------
+| rollout/           |           |
+|    ep_len_mean     | 639       |
+|    ep_rew_mean     | -1.24e+07 |
+| time/              |           |
+|    episodes        | 13        |
+|    fps             | 176       |
+|    time_elapsed    | 56        |
+|    total_timesteps | 10000     |
+| train/             |           |
+|    actor_loss      | 2.06e+07  |
+|    critic_loss     | 8.49e+04  |
+|    ent_coef        | 1.44e+05  |
+|    ent_coef_loss   | -669      |
+|    learning_rate   | 0.0064    |
+|    n_updates       | 2474      |
+----------------------------------
+----------------------------------
+| rollout/           |           |
+|    ep_len_mean     | 776       |
+|    ep_rew_mean     | -1.53e+07 |
+| time/              |           |
+|    episodes        | 21        |
+|    fps             | 167       |
+|    time_elapsed    | 119       |
+|    total_timesteps | 20000     |
+| train/             |           |
+|    actor_loss      | 2.41e+14  |
+|    critic_loss     | 1.12e+14  |
+|    ent_coef        | 3.85e+12  |
+|    ent_coef_loss   | -1.64e+03 |
+|    learning_rate   | 0.0064    |
+|    n_updates       | 4974      |
+----------------------------------
+----------------------------------
+| rollout/           |           |
+|    ep_len_mean     | 858       |
+|    ep_rew_mean     | -1.71e+07 |
+| time/              |           |
+|    episodes        | 33        |
+|    fps             | 163       |
+|    time_elapsed    | 184       |
+|    total_timesteps | 30000     |
+| train/             |           |
+|    actor_loss      | 2.3e+21   |
+|    critic_loss     | 1.08e+21  |
+|    ent_coef        | 3.68e+19  |
+|    ent_coef_loss   | -2.54e+03 |
+|    learning_rate   | 0.0064    |
+|    n_updates       | 7474      |
+----------------------------------
+----------------------------------
+| rollout/           |           |
+|    ep_len_mean     | 885       |
+|    ep_rew_mean     | -1.77e+07 |
+| time/              |           |
+|    episodes        | 41        |
+|    fps             | 161       |
+|    time_elapsed    | 247       |
+|    total_timesteps | 40000     |
+| train/             |           |
+|    actor_loss      | 2.05e+28  |
+|    critic_loss     | 9.61e+27  |
+|    ent_coef        | 3.29e+26  |
+|    ent_coef_loss   | -3.44e+03 |
+|    learning_rate   | 0.0064    |
+|    n_updates       | 9974      |
+----------------------------------
+----------------------------------
+| rollout/           |           |
+|    ep_len_mean     | 911       |
+|    ep_rew_mean     | -1.82e+07 |
+| time/              |           |
+|    episodes        | 53        |
+|    fps             | 161       |
+|    time_elapsed    | 310       |
+|    total_timesteps | 50000     |
+| train/             |           |
+|    actor_loss      | 1.82e+35  |
+|    critic_loss     | inf       |
+|    ent_coef        | 2.93e+33  |
+|    ent_coef_loss   | -4.34e+03 |
+|    learning_rate   | 0.0064    |
+|    n_updates       | 12474     |
+----------------------------------
+Traceback (most recent call last):
+  File "/homes/choton/rl4pag/weed_detection_using_RL/train_random.py", line 133, in <module>
+    model.learn(total_timesteps=args.steps, callback=logger1, log_interval=None, tb_log_name=f"{args.algorithm}_set{args.set}", reset_num_timesteps=False)
+  File "/homes/choton/miniconda3/envs/rl4pag/lib/python3.12/site-packages/sb3_contrib/tqc/tqc.py", line 302, in learn
+    return super().learn(
+           ^^^^^^^^^^^^^^
+  File "/homes/choton/miniconda3/envs/rl4pag/lib/python3.12/site-packages/stable_baselines3/common/off_policy_algorithm.py", line 328, in learn
+    rollout = self.collect_rollouts(
+              ^^^^^^^^^^^^^^^^^^^^^^
+  File "/homes/choton/miniconda3/envs/rl4pag/lib/python3.12/site-packages/stable_baselines3/common/off_policy_algorithm.py", line 557, in collect_rollouts
+    actions, buffer_actions = self._sample_action(learning_starts, action_noise, env.num_envs)
+                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/homes/choton/miniconda3/envs/rl4pag/lib/python3.12/site-packages/stable_baselines3/common/off_policy_algorithm.py", line 390, in _sample_action
+    unscaled_action, _ = self.predict(self._last_obs, deterministic=False)
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/homes/choton/miniconda3/envs/rl4pag/lib/python3.12/site-packages/stable_baselines3/common/base_class.py", line 557, in predict
+    return self.policy.predict(observation, state, episode_start, deterministic)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/homes/choton/miniconda3/envs/rl4pag/lib/python3.12/site-packages/stable_baselines3/common/policies.py", line 368, in predict
+    actions = self._predict(obs_tensor, deterministic=deterministic)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/homes/choton/miniconda3/envs/rl4pag/lib/python3.12/site-packages/sb3_contrib/tqc/policies.py", line 418, in _predict
+    return self.actor(observation, deterministic)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/homes/choton/miniconda3/envs/rl4pag/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1553, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/homes/choton/miniconda3/envs/rl4pag/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1562, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/homes/choton/miniconda3/envs/rl4pag/lib/python3.12/site-packages/sb3_contrib/tqc/policies.py", line 169, in forward
+    return self.action_dist.actions_from_params(mean_actions, log_std, deterministic=deterministic, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/homes/choton/miniconda3/envs/rl4pag/lib/python3.12/site-packages/stable_baselines3/common/distributions.py", line 190, in actions_from_params
+    self.proba_distribution(mean_actions, log_std)
+  File "/homes/choton/miniconda3/envs/rl4pag/lib/python3.12/site-packages/stable_baselines3/common/distributions.py", line 224, in proba_distribution
+    super().proba_distribution(mean_actions, log_std)
+  File "/homes/choton/miniconda3/envs/rl4pag/lib/python3.12/site-packages/stable_baselines3/common/distributions.py", line 164, in proba_distribution
+    self.distribution = Normal(mean_actions, action_std)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/homes/choton/miniconda3/envs/rl4pag/lib/python3.12/site-packages/torch/distributions/normal.py", line 57, in __init__
+    super().__init__(batch_shape, validate_args=validate_args)
+  File "/homes/choton/miniconda3/envs/rl4pag/lib/python3.12/site-packages/torch/distributions/distribution.py", line 70, in __init__
+    raise ValueError(
+ValueError: Expected parameter loc (Tensor of shape (4, 6)) of distribution Normal(loc: torch.Size([4, 6]), scale: torch.Size([4, 6])) to satisfy the constraint Real(), but found invalid values:
+tensor([[nan, nan, nan, nan, nan, nan],
+        [nan, nan, nan, nan, nan, nan],
+        [nan, nan, nan, nan, nan, nan],
+        [nan, nan, nan, nan, nan, nan]])
