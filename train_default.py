@@ -27,13 +27,13 @@ if __name__ == "__main__":
     
     # Configure environment
     if args.num_robots > 3:
-        json_dict = load_experiment_dict_json(f'experiments/new_2026_sets_five.json')
+        json_dict = load_experiment_dict_json(f'exp_sets/new_2026_sets_five.json')
     else:
-        json_dict = load_experiment_dict_json(f'experiments/new_2026_cont_sets.json')
+        json_dict = load_experiment_dict_json(f'exp_sets/new_2026_cont_sets.json')
     vec_env = make_vec_env('MultiRobotEnv-v0', env_kwargs={'field_info':json_dict[f"set{args.set}"], 'render_mode': None, 'num_robots':args.num_robots}, n_envs = args.num_envs, seed=args.seed) # Make vector environment
     
     # Logging paths
-    log_home = os.path.join('training_default_logs', f'{args.num_robots}_robots')
+    log_home = os.path.join('logs', 'training_default_logs', f'{args.num_robots}_robots')
     os.makedirs(os.path.join(log_home, "logs"), exist_ok=True)
     os.makedirs(os.path.join(log_home, "outputs"), exist_ok=True)
     os.makedirs(os.path.join(log_home, "weights"), exist_ok=True)
