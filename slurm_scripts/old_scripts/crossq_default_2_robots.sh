@@ -4,8 +4,8 @@
 
 #SBATCH --array=0-9
 #SBATCH --job-name=crossq_d2r
-#SBATCH --output=/homes/choton/rl4pag/weed_detection_using_RL/slurm_outputs/%x_%j.out
-#SBATCH --error=/homes/choton/rl4pag/weed_detection_using_RL/slurm_outputs/%x_%j.err
+#SBATCH --output=/homes/choton/rl4pag/selective_spraying_using_RL/slurm_outputs/%x_%j.out
+#SBATCH --error=/homes/choton/rl4pag/selective_spraying_using_RL/slurm_outputs/%x_%j.err
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=4
 #SBATCH --gpus-per-node=1

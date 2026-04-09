@@ -26,11 +26,12 @@ if __name__ == "__main__":
     print(args)
     
     # Configure environment
-    if args.num_robots > 3:
-        json_dict = load_experiment_dict_json(f'exp_sets/new_2026_sets_five.json')
-    else:
-        json_dict = load_experiment_dict_json(f'exp_sets/new_2026_cont_sets.json')
-    vec_env = make_vec_env('MultiRobotEnv-v0', env_kwargs={'field_info':json_dict[f"set{args.set}"], 'render_mode': None, 'num_robots':args.num_robots}, n_envs = args.num_envs, seed=args.seed) # Make vector environment
+    json_dict = load_experiment_dict_json(f'exp_sets/stochastic_envs_v2.json')
+    vec_env = make_vec_env('MultiRobotEnv-v0', 
+        env_kwargs={'field_info':json_dict[f"set{args.set}"], 
+                    'render_mode': None, 
+                    'num_robots':args.num_robots}, 
+        n_envs = args.num_envs, seed=args.seed) # Make vector environment
     
     # Logging paths
     log_home = os.path.join('logs', 'training_default_logs', f'{args.num_robots}_robots')
@@ -92,3 +93,4 @@ if __name__ == "__main__":
     # Save model
     model.save(weights_path)
     vec_env.close()
+    log_f.close()

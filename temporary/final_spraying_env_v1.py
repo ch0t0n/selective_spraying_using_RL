@@ -361,7 +361,7 @@ class MultiRobotEnv(gym.Env):
             pygame.quit()
 
 # ================================
-# TRAINING
+# TRAINING ON CROSSQ ALGORITHM
 # ================================
 
 device_id = "cuda:0"
