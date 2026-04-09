@@ -36,7 +36,7 @@ algorithm=${algorithms[$alg_idx]}
 set=${sets[$set_idx]}
 num_robots_value=${robots[$robot_idx]}
 seed=${seeds[$seed_idx]}
-steps=1000000
+steps=2000000
 
 BEST_JSON="/homes/choton/rl4pag/selective_spraying_using_RL/logs/best_hyperparams.json"
 

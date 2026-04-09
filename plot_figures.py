@@ -66,42 +66,36 @@ plt.rcParams.update({
 # ================================================================
 
 def load_eval_npz(log_root: str, version_fragment: str,
-                  algorithm: str, num_robots: int, env_set: int):
+                  algorithm: str, num_robots: int, env_set: int,
+                  seeds=(0, 42, 123, 2024, 9999)):
     """
-    Load eval_logs/evaluations.npz for one (alg, N, set) run.
+    Load eval_logs/evaluations.npz for one (alg, N, set), averaged
+    across all seeds.  Matches the fixed train.py directory layout:
+        logs/{version}/{alg}_N{N}_env{set}_seed{seed}/eval_logs/evaluations.npz
     Returns (timesteps, mean_rewards, std_rewards) or None.
     """
-    tag     = f"{algorithm}_N{num_robots}_env{env_set}"
-    pattern = os.path.join(log_root, f"*_{version_fragment}",
-                           tag, "eval_logs", "evaluations.npz")
-    matches = glob.glob(pattern)
-    if not matches:
-        return None
-
-    # Gather all seeds and average
     all_runs = []
-    # Collect per-seed files (one directory = one seed)
-    for m in matches:
-        try:
-            data = np.load(m, allow_pickle=True)
-            # results shape: (n_evals, n_eval_eps) → mean across eps
-            ep_rewards = data["results"].mean(axis=1)  # (n_evals,)
-            timesteps  = data["timesteps"]
-            all_runs.append((timesteps, ep_rewards))
-        except Exception as e:
-            print(f"  [WARN] Could not load {m}: {e}")
-            continue
+    for seed in seeds:
+        tag     = f"{algorithm}_N{num_robots}_env{env_set}_seed{seed}"
+        pattern = os.path.join(log_root, version_fragment, tag,
+                               "eval_logs", "evaluations.npz")
+        matches = glob.glob(pattern)
+        for m in matches:
+            try:
+                data = np.load(m, allow_pickle=True)
+                ep_rewards = data["results"].mean(axis=1)
+                timesteps  = data["timesteps"]
+                all_runs.append((timesteps, ep_rewards))
+            except Exception as e:
+                print(f"  [WARN] Could not load {m}: {e}")
 
     if not all_runs:
         return None
 
-    # Align on common timestep grid (use shortest)
     min_len = min(len(ts) for ts, _ in all_runs)
     ts_ref  = all_runs[0][0][:min_len]
-    stacked = np.array([r[:min_len] for _, r in all_runs])   # (n_seeds, n_evals)
-    mean_r  = stacked.mean(axis=0)
-    std_r   = stacked.std(axis=0)
-    return ts_ref, mean_r, std_r
+    stacked = np.array([r[:min_len] for _, r in all_runs])
+    return ts_ref, stacked.mean(axis=0), stacked.std(axis=0)
 
 
 def load_learning_curves_for_n(log_root: str, version_fragment: str,

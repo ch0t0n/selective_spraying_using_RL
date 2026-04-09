@@ -127,7 +127,7 @@ def find_model_path(log_root: str, algorithm: str, num_robots: int,
     given run parameters. Returns the path to the .zip file (without extension).
     """
     # Build the run-identifier fragment used in build_log_dir()
-    tag = f"{algorithm}_N{num_robots}_env{env_set}"
+    tag = f"{algorithm}_N{num_robots}_env{env_set}_seed{seed}"
 
     if experiment == "main":
         version_fragment = f"main_{hp_tag}"
@@ -196,7 +196,7 @@ def evaluate(args):
     # Find and load model
     model_path   = find_model_path(
         args.log_root, args.algorithm, args.num_robots, args.set,
-        args.experiment, args.hp_tag, args.ablation)
+        args.experiment, args.hp_tag, args.ablation, args.seed)
     AlgClass = ALGORITHMS[args.algorithm]
     model    = AlgClass.load(model_path, device=args.device)
 

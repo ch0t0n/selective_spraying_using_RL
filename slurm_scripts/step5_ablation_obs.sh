@@ -49,7 +49,7 @@ conda run --no-capture-output -n rl4pag python3 train.py \
     --set         1 \
     --num_robots  3 \
     --seed        $seed \
-    --steps       500000 \
+    --steps       1000000 \
     --experiment  ablation_obs \
     --ablation    $obs_mode \
     --verbose     1 \

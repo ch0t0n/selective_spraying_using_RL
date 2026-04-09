@@ -158,11 +158,11 @@ def build_log_dir(args) -> str:
         version = f"{args.experiment}_{args.ablation or EXPERIMENT_DEFAULTS[args.experiment]}"
 
     tag = (f"{args.algorithm}_N{args.num_robots}"
-           f"_env{args.set}")
+           f"_env{args.set}_seed{args.seed}") # ← seed added here
 
     return os.path.join(
         args.log_root,
-        f"{datetime.now().strftime('%b%d')}_{version}",
+        f"{datetime.now().strftime('%b%d%H')}_{version}",
         tag,
     )
 
