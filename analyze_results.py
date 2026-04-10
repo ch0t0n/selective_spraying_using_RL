@@ -234,7 +234,7 @@ def process_ablation_obs(results_dir: str) -> pd.DataFrame:
     df["mean_reward"] = df["mean_reward"].astype(float)
 
     obs_dims = {
-        "full":          "5N+M+2",
+        "full":          "6N+M+2",
         "base":          "5N+M",
         "no_wind":       "6N+M",
         "no_spray_hist": "5N+M+2",

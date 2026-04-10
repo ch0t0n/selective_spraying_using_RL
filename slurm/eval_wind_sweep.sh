@@ -10,8 +10,8 @@
 
 #SBATCH --array=0-99
 #SBATCH --job-name=eval_wind_sweep
-#SBATCH --output=/homes/choton/rl4pag/selective_spraying_using_RL/slurm_outputs/%x_%j.out
-#SBATCH --error=/homes/choton/rl4pag/selective_spraying_using_RL/slurm_outputs/%x_%j.err
+#SBATCH --output=/homes/choton/rl4pag/neurips_experiments/slurm_outputs/%x_%j.out
+#SBATCH --error=/homes/choton/rl4pag/neurips_experiments/slurm_outputs/%x_%j.err
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem=4G
@@ -39,11 +39,11 @@ dr_mode=${dr_modes[$dr_idx]}
 wind_min=${wind_mins[$bin_idx]}
 wind_max=${wind_maxs[$bin_idx]}
 
-OUT_CSV="/homes/choton/rl4pag/selective_spraying_using_RL/results/wind_sweep.csv"
+OUT_CSV="/homes/choton/rl4pag/neurips_experiments/results/wind_sweep.csv"
 
 echo "wind_sweep | dr_mode=$dr_mode | wind=[$wind_min,$wind_max] | seed=$seed"
 
-conda run --no-capture-output -n rl4pag python3 evaluate.py \
+conda run --no-capture-output -n robot_env python3 evaluate.py \
     --algorithm      CrossQ \
     --set            1 \
     --num_robots     3 \

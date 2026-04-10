@@ -34,7 +34,7 @@ if [ "$EXPERIMENT" == "ablation_reward" ]; then
     condition=${conditions[$cond_idx]}
     seed=${seeds[$seed_idx]}
     echo "eval | ablation_reward | condition=$condition | seed=$seed"
-    conda run --no-capture-output -n rl4pag python3 evaluate.py \
+    conda run --no-capture-output -n robot_env python3 evaluate.py \
         --algorithm  CrossQ --set 1 --num_robots 3 --seed $seed \
         --experiment ablation_reward --ablation $condition \
         --output_csv $RESULTS_DIR/ablation_reward.csv --n_eval_eps 50
@@ -47,7 +47,7 @@ elif [ "$EXPERIMENT" == "ablation_obs" ]; then
     obs_mode=${obs_modes[$cond_idx]}
     seed=${seeds[$seed_idx]}
     echo "eval | ablation_obs | obs_mode=$obs_mode | seed=$seed"
-    conda run --no-capture-output -n rl4pag python3 evaluate.py \
+    conda run --no-capture-output -n robot_env python3 evaluate.py \
         --algorithm  CrossQ --set 1 --num_robots 3 --seed $seed \
         --experiment ablation_obs --ablation $obs_mode \
         --output_csv $RESULTS_DIR/ablation_obs.csv --n_eval_eps 50
@@ -65,7 +65,7 @@ elif [ "$EXPERIMENT" == "ablation_uncertainty" ]; then
     eval_mode=${eval_modes[$eval_idx]}
     seed=${seeds[$seed_idx]}
     echo "eval | ablation_uncertainty | train=$train_mode | eval=$eval_mode | seed=$seed"
-    conda run --no-capture-output -n rl4pag python3 evaluate.py \
+    conda run --no-capture-output -n robot_env python3 evaluate.py \
         --algorithm  CrossQ --set 1 --num_robots 3 --seed $seed \
         --experiment ablation_uncertainty --ablation $train_mode \
         --eval_uncertainty_mode $eval_mode \
@@ -90,14 +90,14 @@ elif [ "$EXPERIMENT" == "dr" ]; then
     echo "eval | dr | dr_mode=$dr_mode | set=$set | robots=$num_robots_value | seed=$seed"
 
     # In-distribution evaluation (wind ∈ [0, 0.5] m/s)
-    conda run --no-capture-output -n rl4pag python3 evaluate.py \
+    conda run --no-capture-output -n robot_env python3 evaluate.py \
         --algorithm  CrossQ --set $set --num_robots $num_robots_value --seed $seed \
         --experiment dr --ablation $dr_mode \
         --eval_wind_min 0.0 --eval_wind_max 0.5 \
         --output_csv $RESULTS_DIR/dr_inDist.csv --n_eval_eps 50
 
     # OOD evaluation (wind ∈ (0.5, 2.0] m/s)
-    conda run --no-capture-output -n rl4pag python3 evaluate.py \
+    conda run --no-capture-output -n robot_env python3 evaluate.py \
         --algorithm  CrossQ --set $set --num_robots $num_robots_value --seed $seed \
         --experiment dr --ablation $dr_mode \
         --eval_wind_min 0.5 --eval_wind_max 2.0 \

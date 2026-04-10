@@ -141,11 +141,12 @@ Run `evaluate.py` via the evaluation SLURM scripts.
 
 ### 8-A. Main results (Tables 1 & 2)
 
+Both the default and tuned HP runs cover the same full grid:
+**6 algs × 10 sets × 4 robot counts × 5 seeds = 1200 jobs each.**
+
 ```bash
 # Default HPs (Steps 1 → Table 1)
-# Edit eval_main.sh to set --array=0-299 (6 algs × 10 sets × 4 N × ...).
-# Simpler: run interactively for default HP (faster, fewer jobs):
-sbatch --array=0-299 eval_main.sh default
+sbatch --array=0-1199 eval_main.sh default
 
 # Tuned HPs (Steps 3 → Table 2)
 sbatch --array=0-1199 eval_main.sh tuned
@@ -319,14 +320,14 @@ After generating figures, update the captions and `\includegraphics` paths in
 | 5  | step5_ablation_obs.sh   | 25   |
 | 6  | step6_ablation_uncertainty.sh | 20 |
 | 7  | step7_dr.sh             | 600  |
-| 8a | eval_main.sh (default)  | 300  |
+| 8a | eval_main.sh (default)  | 1200 |
 | 8b | eval_main.sh (tuned)    | 1200 |
 | 8c | eval_ablations.sh (reward) | 20 |
 | 8d | eval_ablations.sh (obs) | 25   |
 | 8e | eval_ablations.sh (uncertainty) | 80 |
 | 8f | eval_ablations.sh (dr)  | 600  |
 | 8g | eval_wind_sweep.sh      | 100  |
-| **Total** | | **~4396** |
+| **Total** | | **~5296** |
 
 ---
 

@@ -4,18 +4,21 @@
 #
 # This must be submitted AFTER steps 1 and 3 are complete.
 #
-# Two separate job arrays are launched by this script:
-#   Part A (array 0-199):  default HP  (step 1 results)
-#   Part B (array 0-1199): tuned HP    (step 3 results)
+# Grid: 6 algs × 10 sets × 4 robot counts × 5 seeds = 1200 jobs
+# Both HP tags (default and tuned) use the same array size.
 #
 # Submit each section individually:
-#   sbatch eval_main.sh default
-#   sbatch eval_main.sh tuned
+#   sbatch --array=0-1199 eval_main.sh default
+#   sbatch --array=0-1199 eval_main.sh tuned
+#
+# NOTE: The --array flag MUST be passed on the sbatch command line.
+#       SLURM does not read #SBATCH directives from inside shell
+#       conditionals, so there is no default array size set here.
 # ============================================================
 
 #SBATCH --job-name=eval_main
-#SBATCH --output=/homes/choton/rl4pag/selective_spraying_using_RL/slurm_outputs/%x_%j.out
-#SBATCH --error=/homes/choton/rl4pag/selective_spraying_using_RL/slurm_outputs/%x_%j.err
+#SBATCH --output=/homes/choton/rl4pag/neurips_experiments/slurm_outputs/%x_%j.out
+#SBATCH --error=/homes/choton/rl4pag/neurips_experiments/slurm_outputs/%x_%j.err
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem=4G
@@ -25,14 +28,7 @@
 
 HP_TAG=${1:-default}    # "default" or "tuned"  — pass as sbatch arg
 
-if [ "$HP_TAG" == "default" ]; then
-    algorithms=("A2C" "ARS" "PPO" "TQC" "TRPO" "CrossQ")
-    #SBATCH --array=0-299
-else
-    algorithms=("A2C" "ARS" "PPO" "TQC" "TRPO" "CrossQ")
-    #SBATCH --array=0-1199
-fi
-
+algorithms=("A2C" "ARS" "PPO" "TQC" "TRPO" "CrossQ")
 sets=(1 2 3 4 5 6 7 8 9 10)
 robots=(2 3 4 5)
 seeds=(0 42 123 2024 9999)
@@ -53,11 +49,11 @@ set=${sets[$set_idx]}
 num_robots_value=${robots[$robot_idx]}
 seed=${seeds[$seed_idx]}
 
-OUT_CSV="/homes/choton/rl4pag/selective_spraying_using_RL/results/results_${HP_TAG}.csv"
+OUT_CSV="/homes/choton/rl4pag/neurips_experiments/results/results_${HP_TAG}.csv"
 
 echo "eval_main | alg=$algorithm | set=$set | robots=$num_robots_value | seed=$seed | hp=$HP_TAG"
 
-conda run --no-capture-output -n rl4pag python3 evaluate.py \
+conda run --no-capture-output -n robot_env python3 evaluate.py \
     --algorithm  $algorithm \
     --set        $set \
     --num_robots $num_robots_value \
