@@ -121,24 +121,22 @@ def compute_iqm(rewards: np.ndarray) -> float:
 
 def find_model_path(log_root: str, algorithm: str, num_robots: int,
                     env_set: int, experiment: str, hp_tag: str,
-                    ablation: str) -> str:
+                    ablation: str, seed: int) -> str:
     """
-    Search log_root recursively for a best_model directory matching the
-    given run parameters. Returns the path to the .zip file (without extension).
+    Search log_root for the best_model directory matching the given run.
+    Directory layout (produced by the fixed train.py):
+        logs/{version}/{algorithm}_N{num_robots}_env{set}_seed{seed}/
+                        best_model/best_model.zip
     """
-    # Build the run-identifier fragment used in build_log_dir()
-    tag = f"{algorithm}_N{num_robots}_env{env_set}_seed{seed}"
-
     if experiment == "main":
-        version_fragment = f"main_{hp_tag}"
+        version = f"main_{hp_tag}"
     elif experiment == "dr":
-        version_fragment = f"dr_{ablation or 'none'}"
+        version = f"dr_{ablation or 'none'}"
     else:
-        version_fragment = f"{experiment}_{ablation or EXPERIMENT_DEFAULTS[experiment]}"
+        version = f"{experiment}_{ablation or EXPERIMENT_DEFAULTS[experiment]}"
 
-    # Glob: logs/*_{version_fragment}/{tag}/best_model/best_model.zip
-    pattern = os.path.join(
-        log_root, f"*_{version_fragment}", tag, "best_model", "best_model.zip")
+    tag     = f"{algorithm}_N{num_robots}_env{env_set}_seed{seed}"
+    pattern = os.path.join(log_root, version, tag, "best_model", "best_model.zip")
     matches = glob.glob(pattern)
 
     if not matches:
@@ -146,8 +144,6 @@ def find_model_path(log_root: str, algorithm: str, num_robots: int,
             f"No model found for pattern:\n  {pattern}\n"
             "Have you completed training?")
 
-    # Pick the most recently modified match
-    matches.sort(key=os.path.getmtime, reverse=True)
     path = matches[0]
     print(f"  Using model: {path}")
     return path.replace(".zip", "")

@@ -22,8 +22,8 @@
 
 #SBATCH --array=0-19
 #SBATCH --job-name=s6_ablation_uncertainty
-#SBATCH --output=/homes/choton/rl4pag/selective_spraying_using_RL/slurm_logs/step6_ab_un/outputs/%x_%j.out
-#SBATCH --error=/homes/choton/rl4pag/selective_spraying_using_RL/slurm_logs/step6_ab_un/errors/%x_%j.out
+#SBATCH --output=/homes/choton/rl4pag/neurips_experiments/logs/slurm_outputs/s6_ablation_uncertainty/%x_%A_%a.out
+#SBATCH --error=/homes/choton/rl4pag/neurips_experiments/logs/slurm_errors/s6_ablation_uncertainty/%x_%A_%a.err
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=4
 #SBATCH --gpus-per-node=1
@@ -32,6 +32,9 @@
 #SBATCH --partition=ksu-gen-gpu.q
 #SBATCH --gres=gpu:1
 #SBATCH --export=NONE
+
+# --- COMMAND TO EXCLUDE RTX_PRO_6000 (not supported by torch==2.4.0)
+#SBATCH --exclude=warlock[41-42]
 
 uncertainty_modes=("full" "wind_only" "act_only" "deterministic")
 seeds=(0 42 123 2024 9999)
@@ -47,8 +50,8 @@ seed=${seeds[$seed_idx]}
 
 echo "S6-ablation-uncertainty | mode=$uncertainty_mode | seed=$seed | job=$SLURM_ARRAY_TASK_ID"
 
-conda run --no-capture-output -n rl4pag python3 train.py \
-    --algorithm   CrossQ \
+conda run --no-capture-output -n robot_env python3 train.py \
+    --algorithm   "CrossQ" \
     --set         1 \
     --num_robots  3 \
     --seed        $seed \
@@ -56,7 +59,7 @@ conda run --no-capture-output -n rl4pag python3 train.py \
     --experiment  ablation_uncertainty \
     --ablation    $uncertainty_mode \
     --verbose     1 \
-    --log_steps   5000 \
+    --log_steps   10000 \
     --device      cuda
 
 wait

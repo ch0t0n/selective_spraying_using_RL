@@ -14,7 +14,7 @@ Usage example (equivalent to old train_default.py call):
   python train.py --algorithm CrossQ --set 1 --num_robots 3 --seed 42
                   --steps 1000000 --device cuda --experiment main
 
-Author: Jahid Chowdhury Choton (choton@ksu.edu)
+Author: Jahid Chowdhury Choton (email: choton@ksu.edu)
 """
 
 import os
@@ -146,8 +146,18 @@ def build_log_dir(args) -> str:
     """
     Build a unique log directory that encodes all run parameters so
     different experiments never write to the same location.
+
+    Structure:
+        logs/{version}/{algorithm}_N{num_robots}_env{set}_seed{seed}/
+
+    The seed is included in the leaf directory so that parallel jobs
+    for the same (algorithm, N, env_set) never overwrite each other's
+    best_model.zip or eval_logs/evaluations.npz.
+
+    The date prefix has been removed: it caused jobs from the same
+    SLURM array that crossed midnight to land in different parent
+    directories, breaking the glob in evaluate.py.
     """
-    # Base version string
     if args.experiment == "main":
         hp_tag = "tuned" if args.hyperparams_json else "default"
         version = f"main_{hp_tag}"
@@ -158,13 +168,9 @@ def build_log_dir(args) -> str:
         version = f"{args.experiment}_{args.ablation or EXPERIMENT_DEFAULTS[args.experiment]}"
 
     tag = (f"{args.algorithm}_N{args.num_robots}"
-           f"_env{args.set}_seed{args.seed}") # ← seed added here
+           f"_env{args.set}_seed{args.seed}")   # ← seed added here
 
-    return os.path.join(
-        args.log_root,
-        f"{datetime.now().strftime('%b%d%H')}_{version}",
-        tag,
-    )
+    return os.path.join(args.log_root, version, tag)
 
 
 # ================================================================

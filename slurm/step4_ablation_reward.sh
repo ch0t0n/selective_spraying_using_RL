@@ -18,8 +18,8 @@
 
 #SBATCH --array=0-19
 #SBATCH --job-name=s4_ablation_reward
-#SBATCH --output=/homes/choton/rl4pag/selective_spraying_using_RL/slurm_logs/step4_ab_reward/outputs/%x_%j.out
-#SBATCH --error=/homes/choton/rl4pag/selective_spraying_using_RL/slurm_logs/step4_ab_reward/errors/%x_%j.out
+#SBATCH --output=/homes/choton/rl4pag/neurips_experiments/logs/slurm_outputs/s4_ablation_reward/%x_%A_%a.out
+#SBATCH --error=/homes/choton/rl4pag/neurips_experiments/logs/slurm_errors/s4_ablation_reward/%x_%A_%a.err
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=4
 #SBATCH --gpus-per-node=1
@@ -28,6 +28,9 @@
 #SBATCH --partition=ksu-gen-gpu.q
 #SBATCH --gres=gpu:1
 #SBATCH --export=NONE
+
+# --- COMMAND TO EXCLUDE RTX_PRO_6000 (not supported by torch==2.4.0)
+#SBATCH --exclude=warlock[41-42]
 
 conditions=("full" "no_col" "no_cov" "no_eff")
 seeds=(0 42 123 2024 9999)
@@ -43,8 +46,8 @@ seed=${seeds[$seed_idx]}
 
 echo "S4-ablation-reward | condition=$condition | seed=$seed | job=$SLURM_ARRAY_TASK_ID"
 
-conda run --no-capture-output -n rl4pag python3 train.py \
-    --algorithm   CrossQ \
+conda run --no-capture-output -n robot_env python3 train.py \
+    --algorithm   "CrossQ" \
     --set         1 \
     --num_robots  3 \
     --seed        $seed \
@@ -52,7 +55,7 @@ conda run --no-capture-output -n rl4pag python3 train.py \
     --experiment  ablation_reward \
     --ablation    $condition \
     --verbose     1 \
-    --log_steps   5000 \
+    --log_steps   10000 \
     --device      cuda
 
 wait

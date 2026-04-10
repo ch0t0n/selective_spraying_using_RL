@@ -1,0 +1,37 @@
+# To start a job
+sbatch job_name.sh
+
+# To kill a job with id number
+scancel job_number
+
+# To kill all jobs by an USER
+scancel -u $USER
+
+# To print running job status
+kstat --me
+
+# To print job numbers (running and on queue)
+squeue -u $USER
+
+# To print status of a job (if you know the job number)
+sacct -j job_number -l
+
+# To print failed jobs in last 1 day
+sacct --starttime now-1day --user=$USER --state=FAILED
+
+# To check all available GPU types
+sinfo -o "%P %G %N"
+or 
+scontrol show nodes | grep Gres
+
+# To print summary of partitions and overall cluster state
+sinfo -s
+
+# To print all nodes
+sinfo 
+
+# To print available gpus 
+scontrol show nodes | grep CfgTRES | tr ',' '\n' | awk -F '[:=]' '/gres\/gpu:/ { print $2 }' | sort -u
+
+# To print the groups that I belong to
+groups

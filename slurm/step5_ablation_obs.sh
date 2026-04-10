@@ -19,8 +19,8 @@
 
 #SBATCH --array=0-24
 #SBATCH --job-name=s5_ablation_obs
-#SBATCH --output=/homes/choton/rl4pag/selective_spraying_using_RL/slurm_logs/step5_ab_obs/outputs/%x_%j.out
-#SBATCH --error=/homes/choton/rl4pag/selective_spraying_using_RL/slurm_logs/step5_ab_obs/errors/%x_%j.out
+#SBATCH --output=/homes/choton/rl4pag/neurips_experiments/logs/slurm_outputs/s5_ablation_obs/%x_%A_%a.out
+#SBATCH --error=/homes/choton/rl4pag/neurips_experiments/logs/slurm_errors/s5_ablation_obs/%x_%A_%a.err
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=4
 #SBATCH --gpus-per-node=1
@@ -29,6 +29,9 @@
 #SBATCH --partition=ksu-gen-gpu.q
 #SBATCH --gres=gpu:1
 #SBATCH --export=NONE
+
+# --- COMMAND TO EXCLUDE RTX_PRO_6000 (not supported by torch==2.4.0)
+#SBATCH --exclude=warlock[41-42]
 
 obs_modes=("base" "full" "no_wind" "no_spray_hist" "pos_only")
 seeds=(0 42 123 2024 9999)
@@ -44,8 +47,8 @@ seed=${seeds[$seed_idx]}
 
 echo "S5-ablation-obs | obs_mode=$obs_mode | seed=$seed | job=$SLURM_ARRAY_TASK_ID"
 
-conda run --no-capture-output -n rl4pag python3 train.py \
-    --algorithm   CrossQ \
+conda run --no-capture-output -n robot_env python3 train.py \
+    --algorithm   "CrossQ" \
     --set         1 \
     --num_robots  3 \
     --seed        $seed \
@@ -53,7 +56,7 @@ conda run --no-capture-output -n rl4pag python3 train.py \
     --experiment  ablation_obs \
     --ablation    $obs_mode \
     --verbose     1 \
-    --log_steps   5000 \
+    --log_steps   10000 \
     --device      cuda
 
 wait

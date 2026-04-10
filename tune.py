@@ -1,25 +1,24 @@
 #!/usr/bin/env python3
 """
-tune.py — Step 2: Optuna hyperparameter tuning.
+tune.py — Optuna distributed tuning (HPC-safe version)
 
-Runs N_TRIALS per algorithm (0.5 M timesteps each) on env
-variation 1, N = 3 robots.  Writes best_hyperparams.json which
-is consumed by Step 3 via  train.py --hyperparams_json <path>.
-
-One SLURM job per algorithm (see step2_tune.sh):
-  python tune.py --algorithm CrossQ --device cuda
-  python tune.py --algorithm PPO    --device cpu
-
-Author: Jahid Chowdhury Choton (choton@ksu.edu)
+Design:
+- Each SLURM job = 1 Optuna worker
+- Workers share a single study via JournalStorage (append-only log file)
+- JournalStorage is safe on NFS/Lustre/GPFS shared filesystems;
+  SQLite is NOT (file-locking on network mounts corrupts the database)
+- Optuna handles trial scheduling
 """
 
 import os
 import json
 import argparse
+import time
 import numpy as np
-from datetime import datetime
 
 import optuna
+from optuna.storages import JournalStorage
+from optuna.storages.journal import JournalFileBackend
 import gymnasium as gym
 from stable_baselines3 import A2C, PPO
 from stable_baselines3.common.env_util import make_vec_env
@@ -29,17 +28,19 @@ from sb3_contrib import TRPO, TQC, CrossQ, ARS
 from src.env import MultiRobotEnv
 from src.utils import load_experiment_dict_json
 
+
 # ================================================================
-# Constants
+# CONSTANTS
 # ================================================================
 
 JSON_PATH  = os.path.join('exp_sets', 'stochastic_envs_v2.json')
 NUM_ENVS   = 4
 NUM_ROBOTS = 3
 MAX_STEPS  = 1000
-ENV_VAR    = 1      # always tune on variation 1
+ENV_VAR    = 1
 TUNE_SEED  = 42
 N_EVAL_EPS = 10
+
 
 ALGORITHMS = {
     "A2C":    (A2C,    "MlpPolicy"),
@@ -50,34 +51,38 @@ ALGORITHMS = {
     "TQC":    (TQC,    "MlpPolicy"),
 }
 
+
 # ================================================================
-# Argument parsing
+# ARG PARSING
 # ================================================================
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--algorithm",   type=str, required=True,
-                   choices=list(ALGORITHMS.keys()))
-    p.add_argument("--device",      type=str, default="cpu")
-    p.add_argument("--n_trials",    type=int, default=20)
-    p.add_argument("--tune_steps",  type=int, default=int(5e5))
-    p.add_argument("--output_json", type=str,
-                   default=os.path.join('logs', 'best_hyperparams.json'))
-    p.add_argument("--log_root",    type=str,
-                   default=os.path.join('logs', 'step2_tune'))
+    p.add_argument("--algorithm",   required=True, choices=list(ALGORITHMS))
+    p.add_argument("--device",      default="cpu")
+    p.add_argument("--n_trials",    type=int, default=1)
+    p.add_argument("--tune_steps",  type=int, default=500_000)
+    p.add_argument("--storage",     required=True,
+                   help="Path to the journal log file, e.g. "
+                        "logs/optuna_studies/CrossQ_journal.log")
+    p.add_argument("--study_name",  required=True)
+    p.add_argument("--output_json", default="logs/best_hyperparams.json")
+    p.add_argument("--log_root",    default="logs/step2_tune")
     return p.parse_args()
 
+
 # ================================================================
-# IQM helper
+# METRIC
 # ================================================================
 
-def compute_iqm(rewards):
+def compute_iqm(rewards: np.ndarray) -> float:
     q25, q75 = np.percentile(rewards, [25, 75])
     mask = (rewards >= q25) & (rewards <= q75)
     return float(np.mean(rewards[mask])) if mask.any() else float(np.mean(rewards))
 
+
 # ================================================================
-# Search-space samplers (ranges consistent across algorithms)
+# SAMPLERS
 # ================================================================
 
 def sample_a2c(trial):
@@ -89,12 +94,6 @@ def sample_a2c(trial):
         "max_grad_norm": trial.suggest_float("max_grad_norm", 0.30, 0.99),
     }
 
-def sample_ars(trial):
-    return {
-        "learning_rate": trial.suggest_float("learning_rate", 1e-4, 1e-2, log=True),
-        "delta_std":     trial.suggest_float("delta_std",     0.01, 0.30),
-        "n_delta":       trial.suggest_int(  "n_delta",       8,    64),
-    }
 
 def sample_ppo(trial):
     return {
@@ -107,6 +106,26 @@ def sample_ppo(trial):
         "n_epochs":      trial.suggest_int(  "n_epochs",      3,    20),
     }
 
+
+def sample_crossq(trial):
+    return {
+        "learning_rate": trial.suggest_float("learning_rate", 1e-4, 1e-2, log=True),
+        "buffer_size":   trial.suggest_int(  "buffer_size",   1_000, 50_000),
+        "batch_size":    trial.suggest_categorical("batch_size", [256, 512, 1024]),
+    }
+
+
+def sample_tqc(trial):
+    return {
+        "learning_rate": trial.suggest_float("learning_rate", 1e-4, 1e-2, log=True),
+        "buffer_size":   trial.suggest_int(  "buffer_size",   1_000, 50_000),
+        "batch_size":    trial.suggest_categorical("batch_size", [256, 512, 1024]),
+        "tau":           trial.suggest_float("tau",            1e-3, 5e-2),
+        "top_quantiles_to_drop_per_net":
+                         trial.suggest_int("top_quantiles_to_drop_per_net", 0, 5),
+    }
+
+
 def sample_trpo(trial):
     return {
         "learning_rate": trial.suggest_float("learning_rate", 1e-4, 1e-2, log=True),
@@ -115,113 +134,183 @@ def sample_trpo(trial):
         "cg_max_steps":  trial.suggest_int(  "cg_max_steps",  5,    20),
     }
 
-def sample_crossq(trial):
+
+def sample_ars(trial):
     return {
         "learning_rate": trial.suggest_float("learning_rate", 1e-4, 1e-2, log=True),
-        "buffer_size":   trial.suggest_int(  "buffer_size",   1_000, 100_000),
-        "batch_size":    trial.suggest_categorical("batch_size", [64, 128, 256, 512]),
-        # "tau":           trial.suggest_float("tau",            1e-3, 5e-2),
+        "delta_std":     trial.suggest_float("delta_std",     0.01, 0.30),
+        "n_delta":       trial.suggest_int(  "n_delta",       8,    64),
     }
 
-def sample_tqc(trial):
-    return {
-        "learning_rate": trial.suggest_float("learning_rate", 1e-4, 1e-2, log=True),
-        "buffer_size":   trial.suggest_int(  "buffer_size",   1_000, 100_000),
-        "batch_size":    trial.suggest_categorical("batch_size", [64, 128, 256, 512]),
-        "tau":           trial.suggest_float("tau",            1e-3, 5e-2),
-        "top_quantiles_to_drop_per_net":
-                         trial.suggest_int("top_quantiles_to_drop_per_net", 0, 5),
-    }
 
-SAMPLERS = {"A2C": sample_a2c, "ARS": sample_ars, "PPO": sample_ppo,
-            "TRPO": sample_trpo, "CrossQ": sample_crossq, "TQC": sample_tqc}
+SAMPLERS = {
+    "A2C":    sample_a2c,
+    "PPO":    sample_ppo,
+    "CrossQ": sample_crossq,
+    "TQC":    sample_tqc,
+    "TRPO":   sample_trpo,
+    "ARS":    sample_ars,
+}
+
 
 # ================================================================
-# Optuna objective
+# OBJECTIVE
 # ================================================================
 
 def make_objective(alg_name, AlgClass, policy, env_kwargs, device, tune_steps):
+
     def objective(trial):
-        params   = SAMPLERS[alg_name](trial)
-        vec_env  = make_vec_env("MultiRobotEnv-v0", env_kwargs=env_kwargs,
-                                n_envs=NUM_ENVS, seed=TUNE_SEED)
-        eval_env = make_vec_env("MultiRobotEnv-v0", env_kwargs=env_kwargs,
-                                n_envs=1, seed=TUNE_SEED + 1)
-        score = float("-inf")
+        params = SAMPLERS[alg_name](trial)
+
+        vec_env = make_vec_env(
+            "MultiRobotEnv-v0",
+            env_kwargs=env_kwargs,
+            n_envs=NUM_ENVS,
+            seed=TUNE_SEED,
+        )
+
+        eval_env = make_vec_env(
+            "MultiRobotEnv-v0",
+            env_kwargs=env_kwargs,
+            n_envs=1,
+            seed=TUNE_SEED + 1,
+        )
+
+        model = None
         try:
-            model = AlgClass(policy, vec_env, verbose=0,
-                             device=device, seed=TUNE_SEED, **params)
+            model = AlgClass(
+                policy,
+                vec_env,
+                device=device,
+                verbose=0,
+                seed=TUNE_SEED,
+                **params,
+            )
+
             model.learn(total_timesteps=tune_steps)
-            ep_r, _ = evaluate_policy(model, eval_env,
-                                      n_eval_episodes=N_EVAL_EPS,
-                                      deterministic=True,
-                                      return_episode_rewards=True)
+
+            ep_r, _ = evaluate_policy(
+                model,
+                eval_env,
+                n_eval_episodes=N_EVAL_EPS,
+                deterministic=True,
+                return_episode_rewards=True,
+            )
+
             score = compute_iqm(np.array(ep_r, dtype=np.float32))
-            print(f"  trial {trial.number:3d} | IQM={score:8.3f} | {params}")
+            print(f"[trial {trial.number}] IQM={score:.3f} | {params}")
+            return score
+
         except Exception as e:
-            print(f"  trial {trial.number:3d} FAILED: {e}")
+            print(f"[trial {trial.number}] FAILED: {e}")
+            return float("-inf")
+
         finally:
             vec_env.close()
             eval_env.close()
-            if "model" in locals():
+            if model is not None:
                 del model
-        return score
+
     return objective
 
+
 # ================================================================
-# Entry point
+# SAFE STUDY CREATION
+#
+# JournalStorage + JournalFileBackend replaces RDBStorage/SQLite.
+#
+# Why JournalStorage is safe on HPC shared filesystems:
+#   - Writes are append-only: no in-place mutation means no
+#     corruption window if two workers write simultaneously.
+#   - Uses fcntl advisory locking (not SQLite's POSIX locks),
+#     which NFS/Lustre honour correctly.
+#   - The entire study state is reconstructed by replaying the
+#     log on read, so a partial write never corrupts prior trials.
+#
+# --storage is now a plain file path (not a sqlite:/// URL).
+# ================================================================
+
+def create_study_safe(args):
+    for attempt in range(10):
+        try:
+            storage = JournalStorage(
+                JournalFileBackend(args.storage)
+            )
+            return optuna.create_study(
+                direction="maximize",
+                study_name=args.study_name,
+                storage=storage,
+                load_if_exists=True,
+                sampler=optuna.samplers.TPESampler(seed=TUNE_SEED),
+                pruner=optuna.pruners.MedianPruner(),
+            )
+        except Exception as e:
+            wait = 2 ** attempt
+            print(f"Study init retry {attempt + 1}/10 (wait {wait}s): {e}")
+            time.sleep(wait)
+    raise RuntimeError("Failed to create Optuna study after 10 retries")
+
+
+# ================================================================
+# MAIN
 # ================================================================
 
 def run_tuning(args):
     os.makedirs(args.log_root, exist_ok=True)
 
-    json_dict  = load_experiment_dict_json(JSON_PATH)
-    env_kwargs = dict(field_info=json_dict[f"set{ENV_VAR}"],
-                      num_robots=NUM_ROBOTS, max_steps=MAX_STEPS, render_mode=None)
+    json_dict = load_experiment_dict_json(JSON_PATH)
+    env_kwargs = dict(
+        field_info=json_dict[f"set{ENV_VAR}"],
+        num_robots=NUM_ROBOTS,
+        max_steps=MAX_STEPS,
+        render_mode=None,
+    )
 
-    if "MultiRobotEnv-v0" not in gym.envs.registry:
-        gym.register(id="MultiRobotEnv-v0", entry_point=MultiRobotEnv,
-                     max_episode_steps=MAX_STEPS)
+    try:
+        gym.register(
+            id="MultiRobotEnv-v0",
+            entry_point=MultiRobotEnv,
+            max_episode_steps=MAX_STEPS,
+        )
+    except Exception:
+        pass
 
-    alg_name         = args.algorithm
+    alg_name = args.algorithm
     AlgClass, policy = ALGORITHMS[alg_name]
 
-    print(f"\n{'='*60}")
-    print(f"  Tuning : {alg_name}  |  {args.n_trials} trials × {args.tune_steps:,} steps")
-    print(f"  Device : {args.device}  |  Output: {args.output_json}")
-    print(f"{'='*60}")
+    print(f"Algorithm : {alg_name}")
+    print(f"Device    : {args.device}")
+    print(f"Storage   : {args.storage}")
+    print(f"Study     : {args.study_name}")
 
-    study = optuna.create_study(
-        direction="maximize",
-        study_name=f"{alg_name}_tune",
-        sampler=optuna.samplers.TPESampler(seed=TUNE_SEED),
-        pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=3),
-    )
+    study = create_study_safe(args)
+
     study.optimize(
-        make_objective(alg_name, AlgClass, policy,
-                       env_kwargs, args.device, args.tune_steps),
+        make_objective(
+            alg_name, AlgClass, policy,
+            env_kwargs, args.device, args.tune_steps,
+        ),
         n_trials=args.n_trials,
-        show_progress_bar=True,
+        n_jobs=1,
+        show_progress_bar=False,
     )
 
     best = study.best_trial
-    print(f"\nBest IQM = {best.value:.4f}")
-    print(f"Best params: {best.params}")
+    print(f"BEST (so far): IQM={best.value:.4f} | {best.params}")
 
-    # Save per-algorithm study CSV
-    study.trials_dataframe().to_csv(
-        os.path.join(args.log_root, f"optuna_{alg_name}.csv"), index=False)
+    output_dir = os.path.dirname(os.path.abspath(args.output_json))
+    os.makedirs(output_dir, exist_ok=True)
 
-    # Update shared best_hyperparams.json (read-modify-write)
     best_all = {}
-    json_dir = os.path.dirname(os.path.abspath(args.output_json))
-    os.makedirs(json_dir, exist_ok=True)
     if os.path.exists(args.output_json):
         with open(args.output_json) as f:
             best_all = json.load(f)
+
     best_all[alg_name] = {"iqm": best.value, "params": best.params}
+
     with open(args.output_json, "w") as f:
         json.dump(best_all, f, indent=2)
+
     print(f"Updated → {args.output_json}")
 
 
