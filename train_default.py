@@ -7,48 +7,48 @@ from sb3_contrib import TRPO, ARS, TQC, CrossQ
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.callbacks import LogEveryNTimesteps
 from stable_baselines3.common.logger import configure
-from src.utils import load_experiment_dict_json, load_model, parse_bool, Tee
+from src.utils import load_experiment_dict_json, load_model, parse_bool, Tee, set_global_seeds
 
 if __name__ == "__main__":
     # Parse arguments
     parser = argparse.ArgumentParser()
     parser.add_argument('--algorithm', type=str, required=True, choices=['A2C', 'ARS', 'CrossQ', 'PPO', 'TQC', 'TRPO'], help='The DRL algorithm to use')
     parser.add_argument('--set', required=True, type=int, help='The experiment set to use, from the sets defined in the experiments directory')
+    parser.add_argument('--run_name', type=str, required=True, help='The name of the run, used for logging and saving models. If not provided, a name will be generated based on the algorithm, set, and seed')
     parser.add_argument('--verbose', type=int, choices=[0, 1, 2], default=0, help='The verbosity level: 0 no output, 1 info, 2 debug')
-    parser.add_argument('--steps', type=int, default=1_000_000, help='The amount of steps to train the DRL model for')
-    parser.add_argument('--num_robots', type=int, choices=[1, 2, 3, 4, 5, 6, 7], default=3, help='Number of robots')
+    parser.add_argument('--steps', type=int, default=200_000, help='The amount of steps to train the DRL model for')
+    parser.add_argument('--num_robots', type=int, default=3, choices=[1, 2, 3, 4, 5, 6, 7], help='Number of robots')
     parser.add_argument('--num_envs', type=int, default=4, help='The number of parallel environments to run')
     parser.add_argument('--seed', type=int, default=None, help='The random seed to use')
     parser.add_argument('--log_steps', type=int, default=10000, help='The number of steps between each log entry')
     parser.add_argument('--resume', type=parse_bool, default=False, help='If true, loads an existing model to resume training. If false, trains a new model')
     parser.add_argument('--device', type=str, choices=['cpu', 'cuda'], default='cpu', help='The device to train on')
+    
     args = parser.parse_args()
     print(args)
+    set_global_seeds(args.seed)
     
     # Configure environment
-    if args.num_robots > 3:
-        json_dict = load_experiment_dict_json(f'exp_sets/new_2026_sets_five.json')
-    else:
-        json_dict = load_experiment_dict_json(f'exp_sets/new_2026_cont_sets.json')
+    json_dict = load_experiment_dict_json(f'exp_sets/stochastic_envs_v2.json')
     vec_env = make_vec_env('MultiRobotEnv-v0', env_kwargs={'field_info':json_dict[f"set{args.set}"], 'render_mode': None, 'num_robots':args.num_robots}, n_envs = args.num_envs, seed=args.seed) # Make vector environment
     
     # Logging paths
-    log_home = os.path.join('logs', 'training_default_logs', f'{args.num_robots}_robots')
+    log_home = os.path.join('logs', 'training_default_logs', f'{args.run_name}')
     os.makedirs(os.path.join(log_home, "logs"), exist_ok=True)
     os.makedirs(os.path.join(log_home, "outputs"), exist_ok=True)
     os.makedirs(os.path.join(log_home, "weights"), exist_ok=True)
     log_path = os.path.join(log_home, 'logs', f"{args.algorithm}_set{args.set}")
-    out_file = os.path.join(log_home, "outputs", f"py_{args.algorithm}_set{args.set}.log") # std output file
     weights_path = os.path.join(log_home, "weights", f"env{args.set}_{args.algorithm}") # trained model weight
     
-    # Redirect stdout & stderr
-    log_f = open(out_file, "a")
-    sys.stdout = Tee(sys.stdout, log_f)
-    sys.stderr = Tee(sys.stderr, log_f)  
+    # out_file = os.path.join(log_home, "outputs", f"py_{args.algorithm}_set{args.set}.log") # std output file
+    # # Redirect stdout & stderr
+    # log_f = open(out_file, "a")
+    # sys.stdout = Tee(sys.stdout, log_f)
+    # sys.stderr = Tee(sys.stderr, log_f)  
 
     # Set loggers
     logger1 = LogEveryNTimesteps(n_steps=args.log_steps)
-    logger2 = configure(log_path, ["stdout", "log", "csv", "json", "tensorboard"])
+    logger2 = configure(log_path, ["stdout", "csv", "tensorboard"])
 
     # Configure model
     if args.resume:

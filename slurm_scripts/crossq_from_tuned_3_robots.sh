@@ -1,9 +1,10 @@
 #!/bin/bash
 
-# Run all experiments with: sbatch slurm_scripts/train_all.sh
+# EDITED:
+# Run all experiments with: sbatch slurm_scripts/crossq_from_tuned_3_robots.sh
 
 #SBATCH --array=0-9
-#SBATCH --job-name=crossq_d3r_James
+#SBATCH --job-name=crossq_ft3r_James
 #SBATCH --output=slurm_scripts/slurm_out/%x_%A_%a.out
 #SBATCH --error=slurm_scripts/slurm_out/%x_%A_%a.err
 #SBATCH --nodes=1
@@ -46,7 +47,8 @@ algorithm=${algorithms[$algorithm_index]}
 set=${sets[$set_index]}
 seed=${seed[$seed_index]}
 
-RUN_NAME="${algorithm}_set${set}_seed${seed}_default_3_robots_cuda"
+# EDITED:
+RUN_NAME="${algorithm}_set${set}_seed${seed}_from_tuned_3_robots_cuda"
 
 echo "SLURM_JOB_ID=${SLURM_JOB_ID:-}"
 echo "SLURM_ARRAY_TASK_ID=${SLURM_ARRAY_TASK_ID:-}"
@@ -56,7 +58,8 @@ echo "RUN_NAME=$RUN_NAME"
 steps=1000000
 num_robots=3
 
-python3 train_default.py \
+# EDITED:
+python3 train_from_tuned.py \
   --algorithm $algorithm \
   --set $set \
   --seed $seed \

@@ -1,36 +1,70 @@
 #!/bin/bash
 
-# Run all experiments with: sbatch slurm_scripts/train_all.sh
+# Run all experiments with: sbatch slurm_scripts/crossq_random_3_robots.sh
 
 #SBATCH --array=0-9
-#SBATCH --job-name=crossq_r3r
-#SBATCH --output=/homes/choton/rl4pag/weed_detection_using_RL/slurm_outputs/%x_%j.out
-#SBATCH --error=/homes/choton/rl4pag/weed_detection_using_RL/slurm_outputs/%x_%j.err
+#SBATCH --job-name=crossq_r3r_James
+#SBATCH --output=slurm_scripts/slurm_out/%x_%A_%a.out
+#SBATCH --error=slurm_scripts/slurm_out/%x_%A_%a.err
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=4
+#SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=1
-#SBATCH --mem=4G
-#SBATCH --time=48:00:00
-#SBATCH --partition=ksu-gen-gpu.q
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=16G
+#SBATCH --time=160:00:00
 #SBATCH --gres=gpu:1
-#SBATCH --export=NONE
+
+set -euo pipefail
+
+cd "$SLURM_SUBMIT_DIR"
+mkdir -p slurm_scripts/slurm_out
+
+export HOME=/homes/jameschapman
+export WANDB_MODE=offline
+export WANDB_SILENT=true
+
+source /homes/jameschapman/miniforge3/etc/profile.d/conda.sh
+conda activate rl4pag
 
 # Modify these for other experiments
 algorithms=("CrossQ")
 sets=(1 2 3 4 5 6 7 8 9 10)
+seed=(33)
 
-# IMPORTANT: array job length = num_algorithms * num_sets - 1
+# IMPORTANT: array job length = num_algorithms * num_sets * num_seeds - 1
 num_algorithms=${#algorithms[@]}
 num_sets=${#sets[@]}
+num_seeds=${#seed[@]}
 
 index=$((SLURM_ARRAY_TASK_ID))
-algorithm_index=$((index / num_sets))
+
+algorithm_index=$((index / (num_sets * num_seeds)))
+set_index=$(( (index / num_seeds) % num_sets ))
+seed_index=$((index % num_seeds))
+
 algorithm=${algorithms[$algorithm_index]}
-set_index=$((index % num_sets))
 set=${sets[$set_index]}
-steps=1000000
+seed=${seed[$seed_index]}
+
+RUN_NAME="${algorithm}_set${set}_seed${seed}_random_3_robots_cuda"
+
+echo "SLURM_JOB_ID=${SLURM_JOB_ID:-}"
+echo "SLURM_ARRAY_TASK_ID=${SLURM_ARRAY_TASK_ID:-}"
+echo "ALG=$algorithm SET=$set SEED=$seed DEVICE=cuda"
+echo "RUN_NAME=$RUN_NAME"
+
+steps=500000
+n_trials=50
 num_robots=3
+num_envs=4
 
-conda run --no-capture-output -n rl4pag python3 train_random.py --algorithm $algorithm --set $set --verbose 1 --log_steps 10000 --seed 33 --steps $steps --num_robots $num_robots --device "cuda"
-
-wait
+python3 tuning.py \
+  --algorithm $algorithm \
+  --set $set \
+  --seed $seed \
+  --steps $steps \
+  --n_trials $n_trials \
+  --num_robots $num_robots \
+  --num_envs $num_envs \
+  --run_name $RUN_NAME \
+  --device "cuda"
