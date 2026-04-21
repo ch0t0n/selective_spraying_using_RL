@@ -23,9 +23,8 @@ Usage examples:
                      --output_csv results/dr_results.csv \
                      --eval_wind_min 0.0 --eval_wind_max 2.0
 
-The script searches for the best model under log_root by globbing for
-directories whose name contains the algorithm/N/set identifiers, then
-picks the most-recently-modified match.
+The script searches for the best model under log_root using the fixed
+training layout: logs/{version}/{algorithm}_N{N}_env{set}_seed{seed}/.
 
 Author: Jahid Chowdhury Choton (choton@ksu.edu)
 """
@@ -35,6 +34,7 @@ import csv
 import glob
 import json
 import time
+import fcntl
 import argparse
 import numpy as np
 import gymnasium as gym
@@ -44,7 +44,7 @@ from stable_baselines3.common.evaluation import evaluate_policy
 from sb3_contrib import TRPO, TQC, CrossQ, ARS
 
 from src.env import MultiRobotEnv
-from src.utils import load_experiment_dict_json
+from src.utils import load_experiment_dict_json, set_global_seeds
 
 # ================================================================
 # Constants
@@ -119,6 +119,26 @@ def compute_iqm(rewards: np.ndarray) -> float:
     return float(np.mean(rewards[mask])) if mask.any() else float(np.mean(rewards))
 
 
+def append_csv_row_locked(csv_path: str, header: list, row: list) -> None:
+    """Append one row to a CSV under an inter-process file lock."""
+    output_dir = os.path.dirname(os.path.abspath(csv_path))
+    os.makedirs(output_dir, exist_ok=True)
+    lock_path = f"{csv_path}.lock"
+
+    with open(lock_path, "w") as lock_f:
+        fcntl.flock(lock_f, fcntl.LOCK_EX)
+        try:
+            write_header = (not os.path.exists(csv_path) or
+                            os.path.getsize(csv_path) == 0)
+            with open(csv_path, "a", newline="") as f:
+                writer = csv.writer(f)
+                if write_header:
+                    writer.writerow(header)
+                writer.writerow(row)
+        finally:
+            fcntl.flock(lock_f, fcntl.LOCK_UN)
+
+
 def find_model_path(log_root: str, algorithm: str, num_robots: int,
                     env_set: int, experiment: str, hp_tag: str,
                     ablation: str, seed: int) -> str:
@@ -172,6 +192,7 @@ def build_eval_env_kwargs(args, field_info: dict,
     # Override wind speed for DR / wind sensitivity sweep
     if wind_speed is not None:
         kwargs["wind_par"] = [wind_speed, np.random.uniform(0, 360)]
+        kwargs["wind_override"] = True
 
     return kwargs
 
@@ -181,6 +202,9 @@ def build_eval_env_kwargs(args, field_info: dict,
 # ================================================================
 
 def evaluate(args):
+    set_global_seeds(args.seed)
+    eval_rng = np.random.default_rng(args.seed + 10_000)
+
     json_dict  = load_experiment_dict_json(JSON_PATH)
     field_info = json_dict[f"set{args.set}"]
 
@@ -247,25 +271,21 @@ def evaluate(args):
     print(f"  mean_ep_len={mean_ep_len:.1f}  elapsed={elapsed:.1f}s")
 
     # ── Append to CSV ────────────────────────────────────────────
-    os.makedirs(os.path.dirname(os.path.abspath(args.output_csv)), exist_ok=True)
-    write_header = not os.path.exists(args.output_csv)
-    with open(args.output_csv, "a", newline="") as f:
-        writer = csv.writer(f)
-        if write_header:
-            writer.writerow([
-                "algorithm", "experiment", "ablation", "hp_tag",
-                "num_robots", "env_set", "seed",
-                "eval_wind_min", "eval_wind_max", "eval_uncertainty_mode",
-                "mean_reward", "std_reward", "max_reward", "iqm",
-                "cvar_0.1", "mean_ep_length", "n_episodes", "elapsed_s",
-            ])
-        writer.writerow([
-            args.algorithm, args.experiment, ablation_val, args.hp_tag,
-            args.num_robots, args.set, args.seed,
-            args.eval_wind_min, args.eval_wind_max, args.eval_uncertainty_mode,
-            f"{mean_r:.4f}", f"{std_r:.4f}", f"{max_r:.4f}", f"{iqm_r:.4f}",
-            f"{cvar:.4f}", f"{mean_ep_len:.2f}", args.n_eval_eps, f"{elapsed:.1f}",
-        ])
+    header = [
+        "algorithm", "experiment", "ablation", "hp_tag",
+        "num_robots", "env_set", "seed",
+        "eval_wind_min", "eval_wind_max", "eval_uncertainty_mode",
+        "mean_reward", "std_reward", "max_reward", "iqm",
+        "cvar_0.1", "mean_ep_length", "n_episodes", "elapsed_s",
+    ]
+    row = [
+        args.algorithm, args.experiment, ablation_val, args.hp_tag,
+        args.num_robots, args.set, args.seed,
+        args.eval_wind_min, args.eval_wind_max, args.eval_uncertainty_mode,
+        f"{mean_r:.4f}", f"{std_r:.4f}", f"{max_r:.4f}", f"{iqm_r:.4f}",
+        f"{cvar:.4f}", f"{mean_ep_len:.2f}", args.n_eval_eps, f"{elapsed:.1f}",
+    ]
+    append_csv_row_locked(args.output_csv, header, row)
     print(f"  Appended to {args.output_csv}")
 
 

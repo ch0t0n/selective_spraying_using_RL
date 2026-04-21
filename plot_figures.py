@@ -270,6 +270,7 @@ def plot_wind_sensitivity(results_dir: str, log_root: str, figures_dir: str):
 
     df = pd.read_csv(wind_csv)
     df["mean_reward"]  = df["mean_reward"].astype(float)
+    df["iqm"] = df["iqm"].astype(float)
     df["eval_wind_mid"] = (df["eval_wind_min"].astype(float) +
                            df["eval_wind_max"].astype(float)) / 2
 
@@ -278,9 +279,9 @@ def plot_wind_sensitivity(results_dir: str, log_root: str, figures_dir: str):
         sub = df[df["ablation"] == dr_mode].sort_values("eval_wind_mid")
         if sub.empty:
             continue
-        r = sub.groupby("eval_wind_mid")["mean_reward"]
+        r = sub.groupby("eval_wind_mid")["iqm"]
         means = r.mean()
-        stds  = r.std()
+        stds  = r.std().fillna(0.0)
         label = "Standard training" if dr_mode == "none" else "Full DR training"
         ax.plot(means.index, means.values, marker="o",
                 label=label, color=DR_COLORS[dr_mode])
@@ -292,7 +293,7 @@ def plot_wind_sensitivity(results_dir: str, log_root: str, figures_dir: str):
     ax.axvline(x=0.5, color="gray", linestyle="--", alpha=0.7, label="$v_{\\text{clip}}/10$")
     ax.axvline(x=1.0, color="orange", linestyle="--", alpha=0.7, label="DR training max")
     ax.set_xlabel("Wind speed $v_a$ (m/s)")
-    ax.set_ylabel("IQM")
+    ax.set_ylabel("IQM") # IQM or mean__reward ?
     ax.set_title("Wind Sensitivity: Standard vs DR-trained Policy")
     ax.legend(fontsize=9)
     ax.grid(True, alpha=0.3)

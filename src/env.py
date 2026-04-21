@@ -47,6 +47,7 @@ class MultiRobotEnv(gym.Env):
         field_info,
         render_mode=None,
         wind_par=[0, 0],
+        wind_override=False,
         num_robots=3,
         render_scale=5,
         max_steps=1000,
@@ -125,6 +126,7 @@ class MultiRobotEnv(gym.Env):
 
         # ── Base wind (mean) magnitude and direction
         self.base_wind_mag, self.base_wind_dir = wind_par
+        self.wind_override = bool(wind_override)
 
         # ── Noise stds — set by uncertainty_mode ────────────────────
         # These are the *nominal* values; DR "full" may override
@@ -219,7 +221,7 @@ class MultiRobotEnv(gym.Env):
             state = self.robot_positions.flatten().copy()
 
         if self.obs_noise_std > 0:
-            state = state + np.random.normal(0, self.obs_noise_std, size=state.shape)
+            state = state + self.np_random.normal(0, self.obs_noise_std, size=state.shape)
 
         return state.astype(np.float32), info
 
@@ -230,8 +232,13 @@ class MultiRobotEnv(gym.Env):
         # ── Domain randomization — re-sample base params each episode ─
         if self.dr_mode == "none":
             # Standard: add small episode-level noise to the nominal wind
-            self.wind_mag = self.base_wind_mag + np.random.normal(0, self.wind_noise_std)
-            self.wind_dir = self.base_wind_dir + np.random.normal(0, self.wind_dir_noise_std)
+            # unless evaluation explicitly requested a fixed wind.
+            if self.wind_override:
+                self.wind_mag = self.base_wind_mag
+                self.wind_dir = self.base_wind_dir
+            else:
+                self.wind_mag = self.base_wind_mag + self.np_random.normal(0, self.wind_noise_std)
+                self.wind_dir = self.base_wind_dir + self.np_random.normal(0, self.wind_dir_noise_std)
             # Restore nominal physical params (may have been overridden last episode)
             self.action_noise_std = self._nominal_action_noise_std
             self.infected_radius  = self._nominal_infected_radius
@@ -240,9 +247,13 @@ class MultiRobotEnv(gym.Env):
             self.thrust_power     = self._nominal_thrust_power
 
         elif self.dr_mode == "wind":
-            # Randomise wind speed and direction uniformly
-            self.wind_mag = float(np.random.uniform(0.0, 1.0))
-            self.wind_dir = float(np.degrees(np.random.uniform(0.0, 2 * np.pi)))
+            # Randomise wind unless evaluation explicitly requested a fixed wind.
+            if self.wind_override:
+                self.wind_mag = self.base_wind_mag
+                self.wind_dir = self.base_wind_dir
+            else:
+                self.wind_mag = float(self.np_random.uniform(0.0, 1.0))
+                self.wind_dir = float(np.degrees(self.np_random.uniform(0.0, 2 * np.pi)))
             self.action_noise_std = self._nominal_action_noise_std
             self.infected_radius  = self._nominal_infected_radius
             self.spray_sigma      = self.infected_radius / 2
@@ -250,18 +261,23 @@ class MultiRobotEnv(gym.Env):
             self.thrust_power     = self._nominal_thrust_power
 
         elif self.dr_mode == "full":
-            # Randomise all physical parameters
-            self.wind_mag         = float(np.random.uniform(0.0, 1.0))
-            self.wind_dir         = float(np.degrees(np.random.uniform(0.0, 2 * np.pi)))
-            self.action_noise_std = float(np.random.uniform(0.01, 0.10))
+            # Randomise all physical parameters.  Wind can still be fixed
+            # for evaluation sweeps while the other DR parameters vary.
+            if self.wind_override:
+                self.wind_mag = self.base_wind_mag
+                self.wind_dir = self.base_wind_dir
+            else:
+                self.wind_mag = float(self.np_random.uniform(0.0, 1.0))
+                self.wind_dir = float(np.degrees(self.np_random.uniform(0.0, 2 * np.pi)))
+            self.action_noise_std = float(self.np_random.uniform(0.01, 0.10))
             r0 = self._nominal_infected_radius
-            self.infected_radius  = float(np.random.uniform(0.8 * r0, 1.2 * r0))
+            self.infected_radius  = float(self.np_random.uniform(0.8 * r0, 1.2 * r0))
             self.spray_sigma      = self.infected_radius / 2
-            self.mass             = float(np.random.uniform(0.9, 1.1))
-            self.thrust_power     = 0.5 * float(np.random.uniform(0.8, 1.2))
+            self.mass             = float(self.np_random.uniform(0.9, 1.1))
+            self.thrust_power     = 0.5 * float(self.np_random.uniform(0.8, 1.2))
 
         # ── Randomise starting positions ─────────────────────────────
-        self.robot_positions = self.init_robot_positions + np.random.normal(
+        self.robot_positions = self.init_robot_positions + self.np_random.normal(
             0, self.init_position_noise, self.init_robot_positions.shape)
 
         # ── Initialise dynamic state ─────────────────────────────────
@@ -289,8 +305,8 @@ class MultiRobotEnv(gym.Env):
         terminated, truncated = False, False
 
         # ── Stochastic wind for this step ────────────────────────────
-        wind_mag = self.wind_mag + np.random.normal(0, self.wind_noise_std)
-        wind_dir = self.wind_dir + np.random.normal(0, self.wind_dir_noise_std)
+        wind_mag = self.wind_mag + self.np_random.normal(0, self.wind_noise_std)
+        wind_dir = self.wind_dir + self.np_random.normal(0, self.wind_dir_noise_std)
         theta = np.radians(wind_dir)
         wind  = np.array([wind_mag * np.cos(theta), wind_mag * np.sin(theta)])
         self._current_wind_vec = wind.astype(np.float32)  # track for obs
@@ -300,8 +316,8 @@ class MultiRobotEnv(gym.Env):
             ax, ay, spray = actions[i]          # Get actual actions: thrust_x, thrust_y, sigma (spray amount)
 
             # Action noise + scaling
-            ax = ax * self.thrust_power + np.random.normal(0, self.action_noise_std)
-            ay = ay * self.thrust_power + np.random.normal(0, self.action_noise_std)
+            ax = ax * self.thrust_power + self.np_random.normal(0, self.action_noise_std)
+            ay = ay * self.thrust_power + self.np_random.normal(0, self.action_noise_std)
 
             # Velocity update (Newtonian dynamics)
             self.robot_velocities[i] += np.array([ax, ay]) / self.mass + wind
@@ -327,7 +343,7 @@ class MultiRobotEnv(gym.Env):
                 if np.any(mask):                                                                # If nearby infected locations exists
                     w = np.exp(-(dists[mask] ** 2) / (2 * self.spray_sigma ** 2))               # Gaussian decay: closer points get more spray effect
                     spray_effect = spray * w                                                    # Scale spray intensity by distance weighting
-                    spray_effect += np.random.normal(0, self.spray_noise_std, size=w.shape)     # Add stochasticity to spraying process
+                    spray_effect += self.np_random.normal(0, self.spray_noise_std, size=w.shape)     # Add stochasticity to spraying process
                     spray_effect  = np.clip(spray_effect, 0, None)                              # Prevent negative spray
                     applied       = np.minimum(spray_effect, self.infected_levels[mask])        # Cannot disinfect more infection than exists
                     total         = np.sum(applied)                                             # Total spray to apply

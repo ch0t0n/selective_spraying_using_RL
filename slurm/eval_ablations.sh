@@ -6,7 +6,7 @@
 # Usage:
 #   sbatch --array=0-19  eval_ablations.sh ablation_reward
 #   sbatch --array=0-24  eval_ablations.sh ablation_obs
-#   sbatch --array=0-19  eval_ablations.sh ablation_uncertainty
+#   sbatch --array=0-79  eval_ablations.sh ablation_uncertainty
 #   sbatch --array=0-599 eval_ablations.sh dr
 # ============================================================
 

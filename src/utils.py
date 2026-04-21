@@ -42,9 +42,10 @@ def encode_action(action):
 
 # Decoding function: Discrete → (x, y, z)
 def decode_action(action):
-    x = action // 25
+    action = int(action)
+    x = action % 5
     y = (action // 5) % 5
-    z = action % 5
+    z = action // 25
     return np.array([x, y, z])
 
 # Filters out arguments that are not present in a model's constructor
@@ -102,3 +103,27 @@ class Tee:
     def flush(self):
         for f in self.files:
             f.flush()
+
+
+def set_global_seeds(seed: int) -> None:
+    if seed is None:
+        return
+
+    import os
+    import random
+    import numpy as np
+
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+
+    try:
+        import torch
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    except Exception:
+        pass

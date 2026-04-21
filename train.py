@@ -33,7 +33,7 @@ from stable_baselines3.common.logger import configure
 from sb3_contrib import TRPO, TQC, CrossQ, ARS
 
 from src.env import MultiRobotEnv
-from src.utils import load_experiment_dict_json
+from src.utils import load_experiment_dict_json, set_global_seeds
 
 # ================================================================
 # Constants
@@ -115,11 +115,27 @@ def parse_args():
 
 def load_hyperparams(json_path: str, algorithm: str) -> dict:
     """Load tuned hyperparameters for one algorithm from JSON (Step 2 output)."""
-    if json_path is None or not os.path.exists(json_path):
+    if json_path is None:
         return {}
+    if not os.path.exists(json_path):
+        raise FileNotFoundError(f"Hyperparameter JSON not found: {json_path}")
+
     with open(json_path) as f:
         data = json.load(f)
-    hp = data.get(algorithm, {}).get("params", {})
+    # if hyperparameters are missing, do NOT silently use defaults
+    if algorithm not in data:
+        raise KeyError(
+            f"Algorithm '{algorithm}' not found in hyperparameter JSON: {json_path}"
+        )
+    if not isinstance(data[algorithm], dict) or "params" not in data[algorithm]:
+        raise KeyError(
+            f"Missing 'params' for algorithm '{algorithm}' in: {json_path}"
+        )
+    hp = data[algorithm]["params"]
+    if not isinstance(hp, dict):
+        raise TypeError(
+            f"Expected dict for '{algorithm}' params in {json_path}, got {type(hp).__name__}"
+        )
     print(f"  Loaded tuned HPs for {algorithm}: {hp}")
     return hp
 
@@ -178,7 +194,7 @@ def build_log_dir(args) -> str:
 # ================================================================
 
 def train(args):
-    np.random.seed(args.seed)
+    set_global_seeds(args.seed)
 
     # ── Load environment config ──────────────────────────────────
     json_dict  = load_experiment_dict_json(JSON_PATH)

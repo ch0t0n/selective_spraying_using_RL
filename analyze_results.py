@@ -22,7 +22,7 @@ import os
 import argparse
 import numpy as np
 import pandas as pd
-from scipy.stats import ranksums
+from scipy.stats import ranksums, wilcoxon
 
 # ================================================================
 # Helpers
@@ -38,8 +38,30 @@ def cvar_0_1(vals: np.ndarray) -> float:
     n = max(1, int(np.ceil(0.1 * len(vals))))
     return float(np.mean(np.sort(vals)[:n]))
 
+# The previous helper was named wilcoxon_pval but used scipy.stats.ranksums,
+# which is an unpaired rank-sum test. Main-result comparisons are paired because
+# each algorithm is evaluated on the same env_set × seed combinations. Therefore,
+# we first collapse duplicate rows to one value per algorithm × N × env_set × seed,
+# then align algorithms by env_set and seed before applying scipy.stats.wilcoxon,
+# the paired signed-rank test. This preserves the matched-run structure that the
+# rank-sum test ignored.
+
+# def wilcoxon_pval(a: np.ndarray, b: np.ndarray) -> float:
+#     if len(a) < 2 or len(b) < 2:
+#         return 1.0
+#     _, p = ranksums(a, b)
+#     return float(p)
 
 def wilcoxon_pval(a: np.ndarray, b: np.ndarray) -> float:
+    if len(a) != len(b) or len(a) < 2:
+        return 1.0
+    # If all paired differences are zero, scipy can fail or return edge-case behavior.
+    if np.allclose(a, b):
+        return 1.0
+    _, p = wilcoxon(a, b, zero_method="wilcox", alternative="two-sided")
+    return float(p)
+
+def ranksum_pval(a: np.ndarray, b: np.ndarray) -> float:
     if len(a) < 2 or len(b) < 2:
         return 1.0
     _, p = ranksums(a, b)
@@ -68,7 +90,7 @@ def mark_best(df_summary: pd.DataFrame,
         df_iter = df_summary.groupby(group_cols)
         groups = None
 
-    for key, grp in (df_iter if groups is None else df_summary.groupby(group_cols)):
+    for key, grp in df_iter:
         sorted_grp = grp.sort_values(value_col, ascending=False)
         if len(sorted_grp) < 2:
             df_summary.loc[sorted_grp.index[0], "is_best"] = True
@@ -83,6 +105,69 @@ def mark_best(df_summary: pd.DataFrame,
 
     return df_summary
 
+def paired_wilcoxon_between_algs(
+    df_pairs: pd.DataFrame,
+    num_robots: int,
+    alg_a: str,
+    alg_b: str,
+    value_col: str = "mean_reward",
+) -> float:
+    sub = df_pairs[
+        (df_pairs["num_robots"] == num_robots)
+        & (df_pairs["algorithm"].isin([alg_a, alg_b]))
+    ]
+
+    pivot = sub.pivot_table(
+        index=["env_set", "seed"],
+        columns="algorithm",
+        values=value_col,
+        aggfunc="mean",
+    )
+
+    if alg_a not in pivot.columns or alg_b not in pivot.columns:
+        return 1.0
+
+    paired = pivot[[alg_a, alg_b]].dropna()
+
+    return wilcoxon_pval(
+        paired[alg_a].to_numpy(dtype=float),
+        paired[alg_b].to_numpy(dtype=float),
+    )
+
+
+def mark_best_main_paired(
+    summary: pd.DataFrame,
+    df_pairs: pd.DataFrame,
+    value_col: str = "mean_reward",
+    alpha: float = 0.05,
+) -> pd.DataFrame:
+    summary = summary.copy()
+    summary["is_best"] = False
+
+    for N, grp in summary.groupby("num_robots"):
+        sorted_grp = grp.sort_values(value_col, ascending=False)
+
+        if len(sorted_grp) < 2:
+            summary.loc[sorted_grp.index[0], "is_best"] = True
+            continue
+
+        best_idx = sorted_grp.index[0]
+        second_idx = sorted_grp.index[1]
+
+        best_alg = sorted_grp.loc[best_idx, "algorithm"]
+        second_alg = sorted_grp.loc[second_idx, "algorithm"]
+
+        p = paired_wilcoxon_between_algs(
+            df_pairs=df_pairs,
+            num_robots=N,
+            alg_a=best_alg,
+            alg_b=second_alg,
+            value_col=value_col,
+        )
+
+        summary.loc[best_idx, "is_best"] = p < alpha
+
+    return summary
 
 # ================================================================
 # Main results (default / tuned HPs)
@@ -101,8 +186,25 @@ def process_main(results_dir: str, hp_tag: str) -> pd.DataFrame:
 
     df = pd.read_csv(csv_path)
 
+    df["mean_reward"] = df["mean_reward"].astype(float)
+    if "mean_ep_length" in df.columns:
+        df["mean_ep_length"] = df["mean_ep_length"].astype(float)
+    # checks
+    required_cols = {"algorithm", "num_robots", "env_set", "seed", "mean_reward"}
+    missing = required_cols - set(df.columns)
+    if missing:
+        raise ValueError(f"Missing required columns in {csv_path}: {missing}")
+    
+    # One value per algorithm × N × env_set × seed.
+    # This also prevents duplicate appended rows from overweighting a run.
+    df_pairs = (
+        df.groupby(["algorithm", "num_robots", "env_set", "seed"], as_index=False)
+          ["mean_reward"]
+          .mean()
+    )
+
     rows = []
-    for (alg, N), grp in df.groupby(["algorithm", "num_robots"]):
+    for (alg, N), grp in df_pairs.groupby(["algorithm", "num_robots"]):
         r = grp["mean_reward"].astype(float).values   # one row per seed×set
         row = dict(
             algorithm=alg,
@@ -113,10 +215,19 @@ def process_main(results_dir: str, hp_tag: str) -> pd.DataFrame:
             iqm=compute_iqm(r),
             raw_rewards=list(r),
         )
+        if "mean_ep_length" in grp.columns:
+            row["mean_ep_length"] = float(np.mean(grp["mean_ep_length"].astype(float).values))
         rows.append(row)
 
     summary = pd.DataFrame(rows)
-    summary = mark_best(summary, "mean_reward", group_cols=["num_robots"])
+    # summary = mark_best(summary, "mean_reward", group_cols=["num_robots"])
+    # Use paired Wilcoxon, explicitly aligned by env_set and seed.
+    summary = mark_best_main_paired(
+        summary,
+        df_pairs=df_pairs,
+        value_col="mean_reward",
+        alpha=0.05,
+    )
 
     # Write machine-readable CSV
     out = summary.drop(columns=["raw_rewards"])
@@ -249,6 +360,7 @@ def process_ablation_obs(results_dir: str) -> pd.DataFrame:
     }
 
     rows = []
+    # Note for Jahid: base is not used
     for cond in ["full", "no_wind", "no_spray_hist", "pos_only"]:
         grp = df[df["ablation"] == cond]
         if grp.empty:

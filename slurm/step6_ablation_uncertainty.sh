@@ -11,9 +11,9 @@
 #   2 → act_only      (only actuation noise active)
 #   3 → deterministic (all noise sources disabled)
 #
-# Each trained policy is evaluated under all four conditions
-# inside train.py to measure the stochasticity gap — no extra
-# scripts needed.
+# This script only trains the four uncertainty-mode policies.
+# Cross-evaluation under all train × eval uncertainty conditions
+# is performed later by evaluate.py via eval_ablations.sh.
 #
 # Index layout:
 #   seed_idx = index % 5
