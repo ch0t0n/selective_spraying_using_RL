@@ -1,7 +1,10 @@
 # Reproduction Guide: From Training to Filled LaTeX Tables and Figures
 
-> All commands assume your working directory is the project root:
-> `/homes/choton/rl4pag/selective_spraying_using_RL/`
+> All commands assume your working directory is the project root.
+> If you submit jobs from another directory, set `PROJECT_ROOT` before running
+> `sbatch`, e.g. `export PROJECT_ROOT=/path/to/project/root`.
+> The SLURM output directives use repository-relative `logs/...` paths, so
+> submit from the project root unless you override `--output` and `--error`.
 
 ---
 
@@ -28,19 +31,36 @@ cp step1_others_default_fixed.sh step1_others_default.sh
 ### 0-C. Create output directories
 
 ```bash
-mkdir -p slurm_outputs results figures logs
+mkdir -p results figures logs/optuna_studies
+for d in \
+    gpu_check \
+    s1_crossq_default s1_others_default \
+    s2_tune_cpu s2_tune_gpu \
+    s3_crossq_tuned s3_others_tuned \
+    s4_ablation_reward s5_ablation_obs s6_ablation_uncertainty s7_dr \
+    eval_main eval_ablation eval_wind_sweep
+do
+    mkdir -p "logs/slurm_outputs/$d" "logs/slurm_errors/$d"
+done
 ```
 
-### 0-D. Place new scripts in the project root
+### 0-D. Confirm script locations
 
-Copy these new scripts from the delivery folder to the project root:
+The repository expects the SLURM scripts under `slurm/`:
 ```
-evaluate.py
-analyze_results.py
-plot_figures.py
-eval_main.sh
-eval_ablations.sh
-eval_wind_sweep.sh
+slurm/eval_main.sh
+slurm/eval_ablations.sh
+slurm/eval_wind_sweep.sh
+slurm/step1_crossq_default.sh
+slurm/step1_others_default.sh
+slurm/step2_tune_cpu.sh
+slurm/step2_tune_gpu.sh
+slurm/step3_crossq_tuned.sh
+slurm/step3_others_tuned.sh
+slurm/step4_ablation_reward.sh
+slurm/step5_ablation_obs.sh
+slurm/step6_ablation_uncertainty.sh
+slurm/step7_dr.sh
 ```
 
 ---
@@ -52,8 +72,8 @@ eval_wind_sweep.sh
 Submit two job arrays — one for CrossQ (GPU), one for all others (CPU):
 
 ```bash
-sbatch step1_crossq_default.sh     # 200 jobs (1 alg × 10 sets × 4 N × 5 seeds)
-sbatch step1_others_default.sh     # 1000 jobs (5 algs × 10 sets × 4 N × 5 seeds)
+sbatch slurm/step1_crossq_default.sh     # 200 jobs (1 alg × 10 sets × 4 N × 5 seeds)
+sbatch slurm/step1_others_default.sh     # 1000 jobs (5 algs × 10 sets × 4 N × 5 seeds)
 ```
 
 **Wait for all jobs to finish** before proceeding.  Monitor with:
@@ -63,7 +83,7 @@ squeue -u $USER
 
 **What this produces:**
 ```
-logs/*_main_default/{ALG}_N{N}_env{SET}/
+logs/main_default/{ALG}_N{N}_env{SET}_seed{SEED}/
     best_model/best_model.zip
     eval_logs/evaluations.npz
     *.csv  (SB3 training log)
@@ -73,14 +93,18 @@ logs/*_main_default/{ALG}_N{N}_env{SET}/
 
 ## 2. Run Step 2 — Optuna Hyperparameter Tuning
 
+Submit separate CPU and GPU tuning arrays:
+
 ```bash
-sbatch step2_tune_hyp.sh           # 6 jobs (one per algorithm)
+sbatch slurm/step2_tune_cpu.sh           # 200 jobs (4 CPU algs × 50 trials)
+sbatch slurm/step2_tune_gpu.sh           # 100 jobs (2 GPU algs × 50 trials)
 ```
 
 **What this produces:**
 ```
-logs/best_hyperparams.json         ← consumed by Step 3
-logs/step2_tune/optuna_{ALG}.csv   ← per-algorithm trial history
+logs/best_hyperparams.json               ← consumed by Step 3
+logs/optuna_studies/{ALG}_journal.log    ← Optuna journal storage
+logs/step2_tune/                         ← tuning log root
 ```
 
 ---
@@ -88,13 +112,13 @@ logs/step2_tune/optuna_{ALG}.csv   ← per-algorithm trial history
 ## 3. Run Step 3 — Tuned Hyperparameters
 
 ```bash
-sbatch step3_crossq_tuned.sh       # 200 jobs
-sbatch step3_others_tuned.sh       # 1000 jobs
+sbatch slurm/step3_crossq_tuned.sh       # 200 jobs
+sbatch slurm/step3_others_tuned.sh       # 1000 jobs
 ```
 
 **What this produces:**
 ```
-logs/*_main_tuned/{ALG}_N{N}_env{SET}/
+logs/main_tuned/{ALG}_N{N}_env{SET}_seed{SEED}/
     best_model/best_model.zip
     eval_logs/evaluations.npz
 ```
@@ -104,7 +128,7 @@ logs/*_main_tuned/{ALG}_N{N}_env{SET}/
 ## 4. Run Step 4 — Reward Ablation
 
 ```bash
-sbatch step4_ablation_reward.sh    # 20 jobs (4 conditions × 5 seeds)
+sbatch slurm/step4_ablation_reward.sh    # 20 jobs (4 conditions × 5 seeds)
 ```
 
 ---
@@ -112,7 +136,7 @@ sbatch step4_ablation_reward.sh    # 20 jobs (4 conditions × 5 seeds)
 ## 5. Run Step 5 — Observation Ablation
 
 ```bash
-sbatch step5_ablation_obs.sh       # 25 jobs (5 conditions × 5 seeds)
+sbatch slurm/step5_ablation_obs.sh       # 25 jobs (5 conditions × 5 seeds)
 ```
 
 ---
@@ -120,7 +144,7 @@ sbatch step5_ablation_obs.sh       # 25 jobs (5 conditions × 5 seeds)
 ## 6. Run Step 6 — Uncertainty Ablation
 
 ```bash
-sbatch step6_ablation_uncertainty.sh  # 20 jobs (4 conditions × 5 seeds)
+sbatch slurm/step6_ablation_uncertainty.sh  # 20 jobs (4 conditions × 5 seeds)
 ```
 
 ---
@@ -128,16 +152,16 @@ sbatch step6_ablation_uncertainty.sh  # 20 jobs (4 conditions × 5 seeds)
 ## 7. Run Step 7 — Domain Randomization
 
 ```bash
-sbatch step7_dr.sh                 # 600 jobs (3 DR modes × 10 sets × 4 N × 5 seeds)
+sbatch slurm/step7_dr.sh                 # 600 jobs (3 DR modes × 10 sets × 4 N × 5 seeds)
 ```
 
 ---
 
 ## 8. Post-Training Evaluation (50 episodes per policy)
 
-The SB3 `EvalCallback` during training only runs 5 episodes per checkpoint.
-For the final tables the paper requires **50 evaluation episodes per run**.
-Run `evaluate.py` via the evaluation SLURM scripts.
+The SB3 `EvalCallback` during training runs 20 episodes per checkpoint in the
+provided SLURM scripts. For the final tables, run `evaluate.py` for **50
+evaluation episodes per run** via the evaluation SLURM scripts.
 
 ### 8-A. Main results (Tables 1 & 2)
 
@@ -146,34 +170,34 @@ Both the default and tuned HP runs cover the same full grid:
 
 ```bash
 # Default HPs (Steps 1 → Table 1)
-sbatch --array=0-1199 eval_main.sh default
+sbatch --array=0-1199 slurm/eval_main.sh default
 
 # Tuned HPs (Steps 3 → Table 2)
-sbatch --array=0-1199 eval_main.sh tuned
+sbatch --array=0-1199 slurm/eval_main.sh tuned
 ```
 
-> **Tip:** Because file-append is used, if individual jobs fail you can
+> **Tip:** Because locked CSV upserts are used, if individual jobs fail you can
 > simply re-submit the failed array indices.
 
 ### 8-B. Ablation experiments (Tables 3, 4, 5)
 
 ```bash
-sbatch --array=0-19  eval_ablations.sh ablation_reward
-sbatch --array=0-24  eval_ablations.sh ablation_obs
+sbatch --array=0-19  slurm/eval_ablations.sh ablation_reward
+sbatch --array=0-24  slurm/eval_ablations.sh ablation_obs
 # For uncertainty, cross-eval requires 4 train × 4 eval × 5 seeds = 80 jobs:
-sbatch --array=0-79  eval_ablations.sh ablation_uncertainty
+sbatch --array=0-79  slurm/eval_ablations.sh ablation_uncertainty
 ```
 
 ### 8-C. Domain randomization (Table 7)
 
 ```bash
-sbatch --array=0-599 eval_ablations.sh dr
+sbatch --array=0-599 slurm/eval_ablations.sh dr
 ```
 
 ### 8-D. Wind sweep for Figure 4
 
 ```bash
-sbatch eval_wind_sweep.sh          # 100 jobs (2 DR × 10 bins × 5 seeds)
+sbatch slurm/eval_wind_sweep.sh          # 100 jobs (2 DR × 10 bins × 5 seeds)
 ```
 
 ---
@@ -224,6 +248,9 @@ python plot_figures.py \
 
 ## 11. Fill LaTeX Tables
 
+These steps assume `full_experiments.tex` is available in your paper or
+manuscript directory.
+
 ### Table 1 & 2 (main results)
 
 1. Open `results/main_default_latex_rows.txt`
@@ -254,7 +281,8 @@ $850.3 \pm 42.1\ (847.2)^\dagger$
 ### Table 6 (hyperparameter sensitivity)
 
 This table (CV values) requires a dedicated sensitivity sweep. The values
-come from varying each hyperparameter over a 7-point grid.  Run manually:
+come from varying each hyperparameter over a 7-point grid. If you have the
+auxiliary `sensitivity_hp.py` script, run manually:
 
 ```bash
 python sensitivity_hp.py --algorithm TRPO  --results_dir results
@@ -265,8 +293,6 @@ python sensitivity_hp.py --algorithm TQC   --results_dir results
 # ARS: only alpha, no gae
 python sensitivity_hp.py --algorithm ARS   --results_dir results
 ```
-
-(See `sensitivity_hp.py` for this script.)
 
 ### Table 7 (DR results)
 
@@ -286,13 +312,13 @@ Record IQM from 50 episodes per condition and fill manually.
 
 ### Table 9 (scalability / compute)
 
-Run:
+If you have the auxiliary `measure_compute.py` script, run:
 ```bash
 python measure_compute.py --log_root logs --results_dir results
 ```
 
-(See `measure_compute.py`.) This measures wall-clock time per training run
-from log timestamps, and inference latency from a timed loop.
+This measures wall-clock time per training run from log timestamps, and
+inference latency from a timed loop.
 
 ---
 
@@ -311,23 +337,24 @@ After generating figures, update the captions and `\includegraphics` paths in
 
 | Step | Script | Jobs |
 |---|---|---|
-| 1a | step1_crossq_default.sh | 200 |
-| 1b | step1_others_default.sh | 1000 |
-| 2  | step2_tune_hyp.sh       | 6    |
-| 3a | step3_crossq_tuned.sh   | 200  |
-| 3b | step3_others_tuned.sh   | 1000 |
-| 4  | step4_ablation_reward.sh| 20   |
-| 5  | step5_ablation_obs.sh   | 25   |
-| 6  | step6_ablation_uncertainty.sh | 20 |
-| 7  | step7_dr.sh             | 600  |
-| 8a | eval_main.sh (default)  | 1200 |
-| 8b | eval_main.sh (tuned)    | 1200 |
-| 8c | eval_ablations.sh (reward) | 20 |
-| 8d | eval_ablations.sh (obs) | 25   |
-| 8e | eval_ablations.sh (uncertainty) | 80 |
-| 8f | eval_ablations.sh (dr)  | 600  |
-| 8g | eval_wind_sweep.sh      | 100  |
-| **Total** | | **~5296** |
+| 1a | slurm/step1_crossq_default.sh | 200 |
+| 1b | slurm/step1_others_default.sh | 1000 |
+| 2a | slurm/step2_tune_cpu.sh      | 200  |
+| 2b | slurm/step2_tune_gpu.sh      | 100  |
+| 3a | slurm/step3_crossq_tuned.sh  | 200  |
+| 3b | slurm/step3_others_tuned.sh  | 1000 |
+| 4  | slurm/step4_ablation_reward.sh| 20   |
+| 5  | slurm/step5_ablation_obs.sh   | 25   |
+| 6  | slurm/step6_ablation_uncertainty.sh | 20 |
+| 7  | slurm/step7_dr.sh             | 600  |
+| 8a | slurm/eval_main.sh (default)  | 1200 |
+| 8b | slurm/eval_main.sh (tuned)    | 1200 |
+| 8c | slurm/eval_ablations.sh (reward) | 20 |
+| 8d | slurm/eval_ablations.sh (obs) | 25   |
+| 8e | slurm/eval_ablations.sh (uncertainty) | 80 |
+| 8f | slurm/eval_ablations.sh (dr)  | 600  |
+| 8g | slurm/eval_wind_sweep.sh      | 100  |
+| **Total** | | **6590** |
 
 ---
 
@@ -335,20 +362,20 @@ After generating figures, update the captions and `\includegraphics` paths in
 
 ```
 Step 1 (default train)
-    └─► eval_main.sh (default)
+    └─► slurm/eval_main.sh (default)
             └─► analyze_results.py → Tab. 1
                 plot_figures.py → Fig. 1
 
-Step 2 (tune) ─► Step 3 (tuned train)
-                    └─► eval_main.sh (tuned)
-                            └─► analyze_results.py → Tab. 2
-                                plot_figures.py → Fig. 2, 3
+Step 2 (tune CPU/GPU) ─► Step 3 (tuned train)
+                           └─► slurm/eval_main.sh (tuned)
+                                   └─► analyze_results.py → Tab. 2
+                                       plot_figures.py → Fig. 2, 3
 
-Step 4 ─► eval_ablations.sh (reward) ─► analyze_results.py → Tab. 3
-Step 5 ─► eval_ablations.sh (obs)    ─► analyze_results.py → Tab. 4
-Step 6 ─► eval_ablations.sh (uncertainty) ─► analyze_results.py → Tab. 5
+Step 4 ─► slurm/eval_ablations.sh (reward) ─► analyze_results.py → Tab. 3
+Step 5 ─► slurm/eval_ablations.sh (obs)    ─► analyze_results.py → Tab. 4
+Step 6 ─► slurm/eval_ablations.sh (uncertainty) ─► analyze_results.py → Tab. 5
 
-Step 7 ─► eval_ablations.sh (dr)      ─► analyze_results.py → Tab. 7
-       └─► eval_wind_sweep.sh         ─► plot_figures.py → Fig. 4
-                                      ─► plot_figures.py → Fig. 5
+Step 7 ─► slurm/eval_ablations.sh (dr)      ─► analyze_results.py → Tab. 7
+       └─► slurm/eval_wind_sweep.sh         ─► plot_figures.py → Fig. 4
+                                             ─► plot_figures.py → Fig. 5
 ```

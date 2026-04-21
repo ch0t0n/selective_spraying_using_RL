@@ -10,14 +10,24 @@
 
 #SBATCH --array=0-99
 #SBATCH --job-name=eval_wind_sweep
-#SBATCH --output=/homes/choton/rl4pag/neurips_experiments/slurm_outputs/%x_%j.out
-#SBATCH --error=/homes/choton/rl4pag/neurips_experiments/slurm_outputs/%x_%j.err
+#SBATCH --output=logs/slurm_outputs/eval_wind_sweep/%x_%A_%a.out
+#SBATCH --error=logs/slurm_errors/eval_wind_sweep/%x_%A_%a.err
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem=4G
 #SBATCH --time=2:00:00
-#SBATCH --partition=ksu-gen-gpu.q
 #SBATCH --export=NONE
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$SCRIPT_DIR/train.py" ] || [ -f "$SCRIPT_DIR/tune.py" ] || [ -f "$SCRIPT_DIR/evaluate.py" ]; then
+    DEFAULT_PROJECT_ROOT="$SCRIPT_DIR"
+else
+    DEFAULT_PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+fi
+PROJECT_ROOT="${PROJECT_ROOT:-$DEFAULT_PROJECT_ROOT}"
+cd "$PROJECT_ROOT"
+LOG_ROOT="${LOG_ROOT:-$PROJECT_ROOT/logs}"
+RESULTS_DIR="${RESULTS_DIR:-$PROJECT_ROOT/results}"
 
 seeds=(0 42 123 2024 9999)
 dr_modes=("none" "full")
@@ -39,7 +49,7 @@ dr_mode=${dr_modes[$dr_idx]}
 wind_min=${wind_mins[$bin_idx]}
 wind_max=${wind_maxs[$bin_idx]}
 
-OUT_CSV="/homes/choton/rl4pag/neurips_experiments/results/wind_sweep.csv"
+OUT_CSV="$RESULTS_DIR/wind_sweep.csv"
 
 echo "wind_sweep | dr_mode=$dr_mode | wind=[$wind_min,$wind_max] | seed=$seed"
 
@@ -52,7 +62,10 @@ conda run --no-capture-output -n robot_env python3 evaluate.py \
     --ablation       $dr_mode \
     --eval_wind_min  $wind_min \
     --eval_wind_max  $wind_max \
-    --output_csv     $OUT_CSV \
-    --n_eval_eps     50
+    --freeze_eval_wind_noise \
+    --log_root       "$LOG_ROOT" \
+    --output_csv     "$OUT_CSV" \
+    --n_eval_eps     50 \
+    --device         cpu
 
 wait

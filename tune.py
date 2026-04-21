@@ -34,7 +34,8 @@ from src.utils import load_experiment_dict_json, set_global_seeds
 # CONSTANTS
 # ================================================================
 
-JSON_PATH  = os.path.join('exp_sets', 'stochastic_envs_v2.json')
+PROJECT_ROOT = os.environ.get("PROJECT_ROOT", os.path.dirname(os.path.abspath(__file__)))
+JSON_PATH = os.path.join(PROJECT_ROOT, 'exp_sets', 'stochastic_envs_v2.json')
 NUM_ENVS   = 4
 NUM_ROBOTS = 3
 MAX_STEPS  = 1000
@@ -67,8 +68,11 @@ def parse_args():
                    help="Path to the journal log file, e.g. "
                         "logs/optuna_studies/CrossQ_journal.log")
     p.add_argument("--study_name",  required=True)
-    p.add_argument("--output_json", default="logs/best_hyperparams.json")
-    p.add_argument("--log_root",    default="logs/step2_tune")
+    p.add_argument("--output_json", default=os.path.join(PROJECT_ROOT, "logs", "best_hyperparams.json"))
+    p.add_argument("--log_root",    default=os.path.join(PROJECT_ROOT, "logs", "step2_tune"))
+    p.add_argument("--set",         type=int, default=ENV_VAR)
+    p.add_argument("--num_robots",  type=int, default=NUM_ROBOTS)
+    p.add_argument("--tune_seed",   type=int, default=TUNE_SEED)
     return p.parse_args()
 
 
@@ -154,7 +158,7 @@ SAMPLERS = {
 }
 
 
-def update_best_hyperparams(output_json: str, alg_name: str, best_trial) -> None:
+def update_best_hyperparams(output_json: str, alg_name: str, best_trial, context: dict) -> None:
     """Update the shared best-HP JSON under a file lock."""
     output_dir = os.path.dirname(os.path.abspath(output_json))
     os.makedirs(output_dir, exist_ok=True)
@@ -174,6 +178,7 @@ def update_best_hyperparams(output_json: str, alg_name: str, best_trial) -> None
                 best_all[alg_name] = {
                     "iqm": best_trial.value,
                     "params": best_trial.params,
+                    "context": context,
                 }
 
             tmp_path = f"{output_json}.tmp.{os.getpid()}"
@@ -188,7 +193,7 @@ def update_best_hyperparams(output_json: str, alg_name: str, best_trial) -> None
 # OBJECTIVE
 # ================================================================
 
-def make_objective(alg_name, AlgClass, policy, env_kwargs, device, tune_steps):
+def make_objective(alg_name, AlgClass, policy, env_kwargs, device, tune_steps, tune_seed):
 
     def objective(trial):
         params = SAMPLERS[alg_name](trial)
@@ -197,14 +202,14 @@ def make_objective(alg_name, AlgClass, policy, env_kwargs, device, tune_steps):
             "MultiRobotEnv-v0",
             env_kwargs=env_kwargs,
             n_envs=NUM_ENVS,
-            seed=TUNE_SEED,
+            seed=tune_seed,
         )
 
         eval_env = make_vec_env(
             "MultiRobotEnv-v0",
             env_kwargs=env_kwargs,
             n_envs=1,
-            seed=TUNE_SEED + 1,
+            seed=tune_seed + 1,
         )
 
         model = None
@@ -214,7 +219,7 @@ def make_objective(alg_name, AlgClass, policy, env_kwargs, device, tune_steps):
                 vec_env,
                 device=device,
                 verbose=0,
-                seed=TUNE_SEED,
+                seed=tune_seed,
                 **params,
             )
 
@@ -272,7 +277,7 @@ def create_study_safe(args):
                 study_name=args.study_name,
                 storage=storage,
                 load_if_exists=True,
-                sampler=optuna.samplers.TPESampler(seed=TUNE_SEED),
+                sampler=optuna.samplers.TPESampler(seed=args.tune_seed),
                 pruner=optuna.pruners.MedianPruner(),
             )
         except Exception as e:
@@ -287,13 +292,13 @@ def create_study_safe(args):
 # ================================================================
 
 def run_tuning(args):
-    set_global_seeds(TUNE_SEED)
+    set_global_seeds(args.tune_seed)
     os.makedirs(args.log_root, exist_ok=True)
 
     json_dict = load_experiment_dict_json(JSON_PATH)
     env_kwargs = dict(
-        field_info=json_dict[f"set{ENV_VAR}"],
-        num_robots=NUM_ROBOTS,
+        field_info=json_dict[f"set{args.set}"],
+        num_robots=args.num_robots,
         max_steps=MAX_STEPS,
         render_mode=None,
     )
@@ -320,7 +325,7 @@ def run_tuning(args):
     study.optimize(
         make_objective(
             alg_name, AlgClass, policy,
-            env_kwargs, args.device, args.tune_steps,
+            env_kwargs, args.device, args.tune_steps, args.tune_seed,
         ),
         n_trials=args.n_trials,
         n_jobs=1,
@@ -330,7 +335,13 @@ def run_tuning(args):
     best = study.best_trial
     print(f"BEST (so far): IQM={best.value:.4f} | {best.params}")
 
-    update_best_hyperparams(args.output_json, alg_name, best)
+    context = {
+        "set": args.set,
+        "num_robots": args.num_robots,
+        "tune_seed": args.tune_seed,
+        "tune_steps": args.tune_steps,
+    }
+    update_best_hyperparams(args.output_json, alg_name, best, context)
 
     print(f"Updated → {args.output_json}")
 

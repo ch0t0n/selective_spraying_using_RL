@@ -19,10 +19,11 @@
 
 #SBATCH --array=0-599
 #SBATCH --job-name=s7_dr
-#SBATCH --output=/homes/choton/rl4pag/neurips_experiments/logs/slurm_outputs/s7_dr/%x_%A_%a.out
-#SBATCH --error=/homes/choton/rl4pag/neurips_experiments/logs/slurm_errors/s7_dr/%x_%A_%a.err
+#SBATCH --output=logs/slurm_outputs/s7_dr/%x_%A_%a.out
+#SBATCH --error=logs/slurm_errors/s7_dr/%x_%A_%a.err
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=4
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=4
 #SBATCH --gpus-per-node=1
 #SBATCH --mem=8G
 #SBATCH --time=48:00:00
@@ -32,6 +33,17 @@
 
 # --- COMMAND TO EXCLUDE RTX_PRO_6000 (not supported by torch==2.4.0)
 #SBATCH --exclude=warlock[41-42]
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$SCRIPT_DIR/train.py" ] || [ -f "$SCRIPT_DIR/tune.py" ] || [ -f "$SCRIPT_DIR/evaluate.py" ]; then
+    DEFAULT_PROJECT_ROOT="$SCRIPT_DIR"
+else
+    DEFAULT_PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+fi
+PROJECT_ROOT="${PROJECT_ROOT:-$DEFAULT_PROJECT_ROOT}"
+cd "$PROJECT_ROOT"
+
+LOG_ROOT="${LOG_ROOT:-$PROJECT_ROOT/logs}"
 
 dr_modes=("none" "wind" "full")
 sets=(1 2 3 4 5 6 7 8 9 10)
@@ -67,6 +79,8 @@ conda run --no-capture-output -n robot_env python3 train.py \
     --ablation    $dr_mode \
     --verbose     1 \
     --log_steps   10000 \
+    --n_eval_eps   20 \
+    --log_root     "$LOG_ROOT" \
     --device      cuda
 
 wait

@@ -66,7 +66,8 @@ EXPERIMENT_DEFAULTS = {
     "dr":                    "none",
 }
 
-JSON_PATH = os.path.join('exp_sets', 'stochastic_envs_v2.json')
+PROJECT_ROOT = os.environ.get("PROJECT_ROOT", os.path.dirname(os.path.abspath(__file__)))
+JSON_PATH = os.path.join(PROJECT_ROOT, 'exp_sets', 'stochastic_envs_v2.json')
 
 # ================================================================
 # Argument parsing
@@ -90,7 +91,7 @@ def parse_args():
                    help="Number of parallel training envs")
     p.add_argument("--max_steps",   type=int,   default=1000,
                    help="Maximum steps per episode")
-    p.add_argument("--n_eval_eps",  type=int,   default=5,
+    p.add_argument("--n_eval_eps",  type=int,   default=20,
                    help="Episodes per EvalCallback evaluation")
 
     # ── new experiment-control arguments ──
@@ -103,7 +104,7 @@ def parse_args():
                    help="Path to best_hyperparams.json (Step 3 tuned HPs). "
                         "If omitted, SB3 defaults are used.")
     p.add_argument("--log_root",    type=str,
-                   default=os.path.join('logs'),
+                   default=os.path.join(PROJECT_ROOT, 'logs'),
                    help="Root directory for all logs and saved models")
 
     return p.parse_args()
@@ -131,6 +132,9 @@ def load_hyperparams(json_path: str, algorithm: str) -> dict:
         raise KeyError(
             f"Missing 'params' for algorithm '{algorithm}' in: {json_path}"
         )
+    ctx = data[algorithm].get("context")
+    if ctx:
+        print(f"  HP tuning context for {algorithm}: {ctx}")
     hp = data[algorithm]["params"]
     if not isinstance(hp, dict):
         raise TypeError(

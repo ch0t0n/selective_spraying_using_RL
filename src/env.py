@@ -46,7 +46,7 @@ class MultiRobotEnv(gym.Env):
         self,
         field_info,
         render_mode=None,
-        wind_par=[0, 0],
+        wind_par=None,
         wind_override=False,
         num_robots=3,
         render_scale=5,
@@ -56,6 +56,8 @@ class MultiRobotEnv(gym.Env):
         obs_mode="base",
         uncertainty_mode="full",
         dr_mode="none",
+        wind_noise_override=None,
+        wind_dir_noise_override=None,
     ):
         super().__init__()
 
@@ -125,6 +127,8 @@ class MultiRobotEnv(gym.Env):
         self.max_infection_level = np.max(self.infected_levels_init)
 
         # ── Base wind (mean) magnitude and direction
+        if wind_par is None:
+            wind_par = (0.0, 0.0)
         self.base_wind_mag, self.base_wind_dir = wind_par
         self.wind_override = bool(wind_override)
 
@@ -144,6 +148,11 @@ class MultiRobotEnv(gym.Env):
         self.spray_noise_std        = _noise["spray"]
         self.obs_noise_std          = _noise["obs"]
         self.init_position_noise    = 0.5
+
+        if wind_noise_override is not None:
+            self.wind_noise_std = float(wind_noise_override)
+        if wind_dir_noise_override is not None:
+            self.wind_dir_noise_std = float(wind_dir_noise_override)
 
         # ── Nominal noise stds (DR "full" samples around these) ─────
         self._nominal_action_noise_std = _noise["action"]
@@ -226,7 +235,9 @@ class MultiRobotEnv(gym.Env):
         return state.astype(np.float32), info
 
     # ── reset ────────────────────────────────────────────────────────
-    def reset(self, seed=None, options={}):
+    def reset(self, seed=None, options=None):
+        if options is None:
+            options = {}
         super().reset(seed=seed)
 
         # ── Domain randomization — re-sample base params each episode ─
@@ -277,8 +288,9 @@ class MultiRobotEnv(gym.Env):
             self.thrust_power     = 0.5 * float(self.np_random.uniform(0.8, 1.2))
 
         # ── Randomise starting positions ─────────────────────────────
+        init_noise = 0.0 if self.uncertainty_mode == "deterministic" else self.init_position_noise
         self.robot_positions = self.init_robot_positions + self.np_random.normal(
-            0, self.init_position_noise, self.init_robot_positions.shape)
+            0, init_noise, self.init_robot_positions.shape)
 
         # ── Initialise dynamic state ─────────────────────────────────
         self.robot_velocities = np.zeros((self.num_robots, 2), dtype=np.float32)
@@ -408,12 +420,14 @@ class MultiRobotEnv(gym.Env):
             if remaining <= 0.01:
                 terminated = True
 
-        # ── R_col: collision penalty ──────────────────────────────────
+        # ── R_col: collision penalty / termination ────────────────────
         if self.num_robots > 1:                                             # Check collision only for multi-robots
             if compute_min_dist(self.robot_positions) < self.robot_size:    # Robots too close
                 if self.reward_ablation != "no_col":
                     reward -= 1000.0                                        # Large negative reward for collision
-                terminated = True   # always terminate on collision (safety)
+                    terminated = True
+                # Note to Jahid: Should we always terminate? If we terminate, the agent can learn to avoid collision
+                terminated = True   # COMMENT OUT ?
 
         # ── Build observation & info ──────────────────────────────────
         obs, info = self._get_obs()

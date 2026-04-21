@@ -2,7 +2,7 @@
 # ============================================================
 # Step 6 — Ablation: Physical uncertainty model (CrossQ, GPU)
 #
-# Fixed: CrossQ, N = 3, env variation 1, 0.5 M timesteps
+# Fixed: CrossQ, N = 3, env variation 1, 1,000,000 timesteps
 # Grid:  4 uncertainty conditions × 5 seeds = 20 jobs
 #
 # uncertainty_mode:
@@ -22,10 +22,11 @@
 
 #SBATCH --array=0-19
 #SBATCH --job-name=s6_ablation_uncertainty
-#SBATCH --output=/homes/choton/rl4pag/neurips_experiments/logs/slurm_outputs/s6_ablation_uncertainty/%x_%A_%a.out
-#SBATCH --error=/homes/choton/rl4pag/neurips_experiments/logs/slurm_errors/s6_ablation_uncertainty/%x_%A_%a.err
+#SBATCH --output=logs/slurm_outputs/s6_ablation_uncertainty/%x_%A_%a.out
+#SBATCH --error=logs/slurm_errors/s6_ablation_uncertainty/%x_%A_%a.err
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=4
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=4
 #SBATCH --gpus-per-node=1
 #SBATCH --mem=8G
 #SBATCH --time=24:00:00
@@ -35,6 +36,17 @@
 
 # --- COMMAND TO EXCLUDE RTX_PRO_6000 (not supported by torch==2.4.0)
 #SBATCH --exclude=warlock[41-42]
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$SCRIPT_DIR/train.py" ] || [ -f "$SCRIPT_DIR/tune.py" ] || [ -f "$SCRIPT_DIR/evaluate.py" ]; then
+    DEFAULT_PROJECT_ROOT="$SCRIPT_DIR"
+else
+    DEFAULT_PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+fi
+PROJECT_ROOT="${PROJECT_ROOT:-$DEFAULT_PROJECT_ROOT}"
+cd "$PROJECT_ROOT"
+
+LOG_ROOT="${LOG_ROOT:-$PROJECT_ROOT/logs}"
 
 uncertainty_modes=("full" "wind_only" "act_only" "deterministic")
 seeds=(0 42 123 2024 9999)
@@ -60,6 +72,8 @@ conda run --no-capture-output -n robot_env python3 train.py \
     --ablation    $uncertainty_mode \
     --verbose     1 \
     --log_steps   10000 \
+    --n_eval_eps   20 \
+    --log_root     "$LOG_ROOT" \
     --device      cuda
 
 wait

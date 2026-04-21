@@ -36,6 +36,7 @@ import json
 import time
 import fcntl
 import argparse
+import inspect
 import numpy as np
 import gymnasium as gym
 from stable_baselines3 import A2C, PPO
@@ -50,7 +51,8 @@ from src.utils import load_experiment_dict_json, set_global_seeds
 # Constants
 # ================================================================
 
-JSON_PATH = os.path.join('exp_sets', 'stochastic_envs_v2.json')
+PROJECT_ROOT = os.environ.get("PROJECT_ROOT", os.path.dirname(os.path.abspath(__file__)))
+JSON_PATH = os.path.join(PROJECT_ROOT, 'exp_sets', 'stochastic_envs_v2.json')
 N_EVAL_EPISODES = 50
 MAX_STEPS = 1000
 
@@ -96,7 +98,7 @@ def parse_args():
     p.add_argument("--hp_tag",       type=str, default="default",
                    choices=["default", "tuned"],
                    help="For experiment=main: which HP set was used")
-    p.add_argument("--log_root",     type=str, default="logs")
+    p.add_argument("--log_root",     type=str, default=os.path.join(PROJECT_ROOT, "logs"))
     p.add_argument("--output_csv",   type=str, required=True)
     p.add_argument("--n_eval_eps",   type=int, default=N_EVAL_EPISODES)
     p.add_argument("--device",       type=str, default="cpu")
@@ -107,6 +109,19 @@ def parse_args():
     # For uncertainty ablation cross-evaluation
     p.add_argument("--eval_uncertainty_mode", type=str, default=None,
                    help="Override environment uncertainty_mode at eval time")
+    p.add_argument(
+        "--eval_reward_ablation",
+        type=str,
+        default=None,
+        choices=["full", "no_col", "no_cov", "no_eff"],
+        help="For experiment=ablation_reward: reward function used for evaluation scoring. "
+             "If omitted, uses the training reward_ablation.",
+    )
+    p.add_argument(
+        "--freeze_eval_wind_noise",
+        action="store_true",
+        help="When eval wind is overridden, set wind and wind-direction noise to zero if the env supports it.",
+    )
     return p.parse_args()
 
 # ================================================================
@@ -119,24 +134,43 @@ def compute_iqm(rewards: np.ndarray) -> float:
     return float(np.mean(rewards[mask])) if mask.any() else float(np.mean(rewards))
 
 
-def append_csv_row_locked(csv_path: str, header: list, row: list) -> None:
-    """Append one row to a CSV under an inter-process file lock."""
+def upsert_csv_row_locked(csv_path: str, header: list, row: list, key_cols: list) -> None:
+    """Insert or replace one CSV row under an inter-process file lock."""
     output_dir = os.path.dirname(os.path.abspath(csv_path))
     os.makedirs(output_dir, exist_ok=True)
     lock_path = f"{csv_path}.lock"
+    row_dict = {k: ("" if v is None else v) for k, v in zip(header, row)}
 
     with open(lock_path, "w") as lock_f:
         fcntl.flock(lock_f, fcntl.LOCK_EX)
         try:
-            write_header = (not os.path.exists(csv_path) or
-                            os.path.getsize(csv_path) == 0)
-            with open(csv_path, "a", newline="") as f:
-                writer = csv.writer(f)
-                if write_header:
-                    writer.writerow(header)
-                writer.writerow(row)
+            rows = []
+            if os.path.exists(csv_path) and os.path.getsize(csv_path) > 0:
+                with open(csv_path, newline="") as f:
+                    reader = csv.DictReader(f)
+                    for existing in reader:
+                        same_key = all(
+                            str(existing.get(k, "")) == str(row_dict.get(k, ""))
+                            for k in key_cols
+                        )
+                        if not same_key:
+                            rows.append(existing)
+
+            rows.append(row_dict)
+
+            with open(csv_path, "w", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=header)
+                writer.writeheader()
+                writer.writerows(rows)
         finally:
             fcntl.flock(lock_f, fcntl.LOCK_UN)
+
+
+def _env_accepts_kwarg(name: str) -> bool:
+    try:
+        return name in inspect.signature(MultiRobotEnv.__init__).parameters
+    except (TypeError, ValueError):
+        return False
 
 
 def find_model_path(log_root: str, algorithm: str, num_robots: int,
@@ -185,6 +219,9 @@ def build_eval_env_kwargs(args, field_info: dict,
         ablation_val = args.ablation or EXPERIMENT_DEFAULTS[args.experiment]
         kwargs[kwarg_name] = ablation_val
 
+    if args.experiment == "ablation_reward" and args.eval_reward_ablation is not None:
+        kwargs["reward_ablation"] = args.eval_reward_ablation
+
     # Override uncertainty_mode at eval time (cross-evaluation)
     if args.eval_uncertainty_mode is not None:
         kwargs["uncertainty_mode"] = args.eval_uncertainty_mode
@@ -193,6 +230,11 @@ def build_eval_env_kwargs(args, field_info: dict,
     if wind_speed is not None:
         kwargs["wind_par"] = [wind_speed, np.random.uniform(0, 360)]
         kwargs["wind_override"] = True
+        if args.freeze_eval_wind_noise:
+            if _env_accepts_kwarg("wind_noise_override"):
+                kwargs["wind_noise_override"] = 0.0
+            if _env_accepts_kwarg("wind_dir_noise_override"):
+                kwargs["wind_dir_noise_override"] = 0.0
 
     return kwargs
 
@@ -265,28 +307,43 @@ def evaluate(args):
     cutoff  = int(np.ceil(0.1 * len(rewards_arr)))
     cvar    = float(np.mean(np.sort(rewards_arr)[:cutoff]))
     mean_ep_len = float(np.mean(all_ep_lengths))
+    episode_rewards_json = json.dumps([float(x) for x in all_rewards])
+    episode_lengths_json = json.dumps([int(x) for x in all_ep_lengths])
 
     print(f"\n  mean={mean_r:.3f}  std={std_r:.3f}  max={max_r:.3f}  "
           f"IQM={iqm_r:.3f}  CVaR_0.1={cvar:.3f}")
     print(f"  mean_ep_len={mean_ep_len:.1f}  elapsed={elapsed:.1f}s")
 
-    # ── Append to CSV ────────────────────────────────────────────
+    # ── Upsert to CSV ────────────────────────────────────────────
+    eval_reward_ablation = (
+        args.eval_reward_ablation if args.experiment == "ablation_reward" else None
+    )
     header = [
         "algorithm", "experiment", "ablation", "hp_tag",
         "num_robots", "env_set", "seed",
         "eval_wind_min", "eval_wind_max", "eval_uncertainty_mode",
+        "eval_reward_ablation",
         "mean_reward", "std_reward", "max_reward", "iqm",
         "cvar_0.1", "mean_ep_length", "n_episodes", "elapsed_s",
+        "episode_rewards_json", "episode_lengths_json",
     ]
     row = [
         args.algorithm, args.experiment, ablation_val, args.hp_tag,
         args.num_robots, args.set, args.seed,
         args.eval_wind_min, args.eval_wind_max, args.eval_uncertainty_mode,
+        eval_reward_ablation,
         f"{mean_r:.4f}", f"{std_r:.4f}", f"{max_r:.4f}", f"{iqm_r:.4f}",
         f"{cvar:.4f}", f"{mean_ep_len:.2f}", args.n_eval_eps, f"{elapsed:.1f}",
+        episode_rewards_json, episode_lengths_json,
     ]
-    append_csv_row_locked(args.output_csv, header, row)
-    print(f"  Appended to {args.output_csv}")
+    key_cols = [
+        "algorithm", "experiment", "ablation", "hp_tag",
+        "num_robots", "env_set", "seed",
+        "eval_wind_min", "eval_wind_max", "eval_uncertainty_mode",
+        "eval_reward_ablation",
+    ]
+    upsert_csv_row_locked(args.output_csv, header, row, key_cols)
+    print(f"  Upserted into {args.output_csv}")
 
 
 if __name__ == "__main__":

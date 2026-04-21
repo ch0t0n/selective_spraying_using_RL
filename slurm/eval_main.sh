@@ -17,16 +17,26 @@
 # ============================================================
 
 #SBATCH --job-name=eval_main
-#SBATCH --output=/homes/choton/rl4pag/neurips_experiments/slurm_outputs/%x_%j.out
-#SBATCH --error=/homes/choton/rl4pag/neurips_experiments/slurm_outputs/%x_%j.err
+#SBATCH --output=logs/slurm_outputs/eval_main/%x_%A_%a.out
+#SBATCH --error=logs/slurm_errors/eval_main/%x_%A_%a.err
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem=4G
 #SBATCH --time=4:00:00
-#SBATCH --partition=ksu-gen-gpu.q
 #SBATCH --export=NONE
 
 HP_TAG=${1:-default}    # "default" or "tuned"  — pass as sbatch arg
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$SCRIPT_DIR/train.py" ] || [ -f "$SCRIPT_DIR/tune.py" ] || [ -f "$SCRIPT_DIR/evaluate.py" ]; then
+    DEFAULT_PROJECT_ROOT="$SCRIPT_DIR"
+else
+    DEFAULT_PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+fi
+PROJECT_ROOT="${PROJECT_ROOT:-$DEFAULT_PROJECT_ROOT}"
+cd "$PROJECT_ROOT"
+LOG_ROOT="${LOG_ROOT:-$PROJECT_ROOT/logs}"
+RESULTS_DIR="${RESULTS_DIR:-$PROJECT_ROOT/results}"
+
 
 algorithms=("A2C" "ARS" "PPO" "TQC" "TRPO" "CrossQ")
 sets=(1 2 3 4 5 6 7 8 9 10)
@@ -49,7 +59,7 @@ set=${sets[$set_idx]}
 num_robots_value=${robots[$robot_idx]}
 seed=${seeds[$seed_idx]}
 
-OUT_CSV="/homes/choton/rl4pag/neurips_experiments/results/results_${HP_TAG}.csv"
+OUT_CSV="$RESULTS_DIR/results_${HP_TAG}.csv"
 
 echo "eval_main | alg=$algorithm | set=$set | robots=$num_robots_value | seed=$seed | hp=$HP_TAG"
 
@@ -60,8 +70,9 @@ conda run --no-capture-output -n robot_env python3 evaluate.py \
     --seed       $seed \
     --experiment main \
     --hp_tag     $HP_TAG \
-    --log_root   logs \
-    --output_csv $OUT_CSV \
-    --n_eval_eps 50
+    --log_root   "$LOG_ROOT" \
+    --output_csv "$OUT_CSV" \
+    --n_eval_eps 50 \
+    --device     cpu
 
 wait
