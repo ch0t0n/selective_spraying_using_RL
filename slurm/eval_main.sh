@@ -2,14 +2,15 @@
 # ============================================================
 # eval_main.sh — Run evaluate.py for all main-experiment runs.
 #
-# This must be submitted AFTER steps 1 and 3 are complete.
+# This must be submitted AFTER the corresponding training step is complete.
 #
-# Grid: 6 algs × 10 sets × 4 robot counts × 5 seeds = 1200 jobs
-# Both HP tags (default and tuned) use the same array size.
+# Default/tuned grid: 6 algs × 10 sets × 4 robot counts × 5 seeds = 1200 jobs
+# Transfer grid:      6 algs ×  9 sets × 4 robot counts × 5 seeds = 1080 jobs
 #
 # Submit each section individually:
 #   sbatch --array=0-1199 eval_main.sh default
 #   sbatch --array=0-1199 eval_main.sh tuned
+#   sbatch --array=0-1079 eval_main.sh transfer
 #
 # NOTE: The --array flag MUST be passed on the sbatch command line.
 #       SLURM does not read #SBATCH directives from inside shell
@@ -25,7 +26,9 @@
 #SBATCH --time=4:00:00
 #SBATCH --export=NONE
 
-HP_TAG=${1:-default}    # "default" or "tuned"  — pass as sbatch arg
+set -euo pipefail
+
+HP_TAG=${1:-default}    # "default", "tuned", or "transfer"  — pass as sbatch arg
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -f "$SCRIPT_DIR/train.py" ] || [ -f "$SCRIPT_DIR/tune.py" ] || [ -f "$SCRIPT_DIR/evaluate.py" ]; then
     DEFAULT_PROJECT_ROOT="$SCRIPT_DIR"
@@ -39,7 +42,15 @@ RESULTS_DIR="${RESULTS_DIR:-$PROJECT_ROOT/results}"
 
 
 algorithms=("A2C" "ARS" "PPO" "TQC" "TRPO" "CrossQ")
-sets=(1 2 3 4 5 6 7 8 9 10)
+if [ "$HP_TAG" == "transfer" ]; then
+    sets=(2 3 4 5 6 7 8 9 10)
+    pretrain_steps=2000000
+    finetune_steps=2000000
+else
+    sets=(1 2 3 4 5 6 7 8 9 10)
+    pretrain_steps=0
+    finetune_steps=2000000
+fi
 robots=(2 3 4 5)
 seeds=(0 42 123 2024 9999)
 
@@ -70,9 +81,9 @@ conda run --no-capture-output -n robot_env python3 evaluate.py \
     --seed       $seed \
     --experiment main \
     --hp_tag     $HP_TAG \
+    --pretrain_steps $pretrain_steps \
+    --finetune_steps $finetune_steps \
     --log_root   "$LOG_ROOT" \
     --output_csv "$OUT_CSV" \
     --n_eval_eps 50 \
     --device     cpu
-
-wait

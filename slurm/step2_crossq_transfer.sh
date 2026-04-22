@@ -1,23 +1,24 @@
 #!/bin/bash
 # ============================================================
-# Step 1 — Main results, DEFAULT hyperparameters, CrossQ (GPU)
+# Step 2 — Transfer learning, CrossQ (GPU)
 #
-# Grid: 1 alg × 10 env sets × 4 robot counts × 5 seeds
-# Total jobs: 200  →  array=0-199
+# Source: Step 1 default checkpoint on env set 1.
+# Target: env sets 2–10, same algorithm, robot count, and seed.
+#
+# Grid: 1 alg × 9 target env sets × 4 robot counts × 5 seeds
+# Total jobs: 180  →  array=0-179
 #
 # Index layout (innermost → outermost):
 #   seed_idx  = index % 5
 #   robot_idx = (index // 5) % 4
-#   set_idx   = (index // 20) % 10
-#   alg_idx   = index // 200          (always 0 here)
-#
-# FIX (v2): added all 5 seeds (was seeds=(42) — only 1 seed).
+#   set_idx   = (index // 20) % 9
+#   alg_idx   = index // 180          (always 0 here)
 # ============================================================
 
-#SBATCH --array=0-199
-#SBATCH --job-name=s1_crossq_default
-#SBATCH --output=logs/slurm_outputs/s1_crossq_default/%x_%A_%a.out
-#SBATCH --error=logs/slurm_errors/s1_crossq_default/%x_%A_%a.err
+#SBATCH --array=0-179
+#SBATCH --job-name=s2_crossq_transfer
+#SBATCH --output=logs/slurm_outputs/s2_crossq_transfer/%x_%A_%a.out
+#SBATCH --error=logs/slurm_errors/s2_crossq_transfer/%x_%A_%a.err
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=4
@@ -48,9 +49,10 @@ cd "$PROJECT_ROOT"
 LOG_ROOT="${LOG_ROOT:-$PROJECT_ROOT/logs}"
 
 algorithms=("CrossQ")
-sets=(1 2 3 4 5 6 7 8 9 10)
+sets=(2 3 4 5 6 7 8 9 10)
 robots=(2 3 4 5)
 seeds=(0 42 123 2024 9999)
+source_set=1
 
 num_sets=${#sets[@]}
 num_robots=${#robots[@]}
@@ -68,17 +70,20 @@ num_robots_value=${robots[$robot_idx]}
 seed=${seeds[$seed_idx]}
 steps=2000000
 
-echo "S1-CrossQ-default | alg=$algorithm | set=$set | robots=$num_robots_value | seed=$seed | job=$SLURM_ARRAY_TASK_ID"
+SOURCE_MODEL="$LOG_ROOT/main_default/${algorithm}_N${num_robots_value}_env${source_set}_seed${seed}/best_model/best_model.zip"
+
+echo "S2-CrossQ-transfer | alg=$algorithm | source_set=$source_set | target_set=$set | robots=$num_robots_value | seed=$seed | job=$SLURM_ARRAY_TASK_ID"
 
 conda run --no-capture-output -n robot_env python3 train.py \
-    --algorithm   $algorithm \
-    --set         $set \
-    --num_robots  $num_robots_value \
-    --seed        $seed \
-    --steps       $steps \
-    --experiment  main \
-    --verbose     1 \
-    --log_steps   10000 \
-    --n_eval_eps   20 \
-    --log_root     "$LOG_ROOT" \
-    --device      cuda
+    --algorithm     $algorithm \
+    --set           $set \
+    --num_robots    $num_robots_value \
+    --seed          $seed \
+    --steps         $steps \
+    --experiment    main \
+    --transfer_from "$SOURCE_MODEL" \
+    --verbose       1 \
+    --log_steps     10000 \
+    --n_eval_eps     20 \
+    --log_root       "$LOG_ROOT" \
+    --device        cuda

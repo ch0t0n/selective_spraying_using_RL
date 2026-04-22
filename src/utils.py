@@ -1,4 +1,5 @@
 import json
+import os
 # import yaml
 import numpy as np
 from stable_baselines3 import A2C, PPO
@@ -7,20 +8,36 @@ import distutils
 import inspect
 
 # Loads in a trained model
-def load_model(algorithm, st):
-    model_path = f'trained_models/{algorithm}_set{st}.zip'
+def load_model(algorithm, st, num_robots=3, seed=42, log_root="logs",
+               version="main_default", model_path=None, device="cpu"):
+    if model_path is None:
+        active_path = os.path.join(
+            log_root,
+            version,
+            f"{algorithm}_N{num_robots}_env{st}_seed{seed}",
+            "best_model",
+            "best_model.zip",
+        )
+        legacy_path = f'trained_models/{algorithm}_set{st}.zip'
+        model_path = active_path if os.path.exists(active_path) else legacy_path
+
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"Model not found: {model_path}")
+
     if algorithm == 'A2C':
-        model = A2C.load(model_path, tb_log_name=f'{algorithm}_set{st}')
+        model = A2C.load(model_path, device=device)
     elif algorithm == 'PPO':
-        model = PPO.load(model_path, tb_log_name=f'{algorithm}_set{st}')
+        model = PPO.load(model_path, device=device)
     elif algorithm == 'TRPO':
-        model = TRPO.load(model_path, tb_log_name=f'{algorithm}_set{st}')
+        model = TRPO.load(model_path, device=device)
     elif algorithm == 'ARS':
-        model = ARS.load(model_path, tb_log_name=f'{algorithm}_set{st}')
+        model = ARS.load(model_path, device=device)
     elif algorithm == 'CrossQ':
-        model = CrossQ.load(model_path, tb_log_name=f'{algorithm}_set{st}')
+        model = CrossQ.load(model_path, device=device)
     elif algorithm == 'TQC':
-        model = TQC.load(model_path, tb_log_name=f'{algorithm}_set{st}')
+        model = TQC.load(model_path, device=device)
+    else:
+        raise ValueError(f"Unknown algorithm: {algorithm}")
     return model
 
 # Converts a list of binary digits to its decimal equivalent

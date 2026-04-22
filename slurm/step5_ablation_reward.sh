@@ -1,26 +1,25 @@
 #!/bin/bash
 # ============================================================
-# Step 5 — Ablation: Observation space (CrossQ, GPU)
+# Step 5 — Ablation: Reward function components (CrossQ, GPU)
 #
 # Fixed: CrossQ, N = 3, env variation 1, 1,000,000 timesteps
-# Grid:  5 obs conditions × 5 seeds = 25 jobs
+# Grid:  4 reward conditions × 5 seeds = 20 jobs
 #
-# obs_mode:
-#   0 → base          (original: positions+vel+cap+infection, 5N+M)
-#   1 → full          (base + wind vector + spray history, 6N+M+2)
-#   2 → no_wind       (base + spray history, no wind estimate)
-#   3 → no_spray_hist (base + wind vector, no spray history)
-#   4 → pos_only      (robot positions only, 2N)
+# conditions:
+#   0 → full     (all reward terms — baseline)
+#   1 → no_col   (collision penalty + termination disabled)
+#   2 → no_cov   (coverage terms disabled)
+#   3 → no_eff   (efficiency terms disabled)
 #
 # Index layout:
 #   seed_idx = index % 5
 #   cond_idx = index // 5
 # ============================================================
 
-#SBATCH --array=0-24
-#SBATCH --job-name=s5_ablation_obs
-#SBATCH --output=logs/slurm_outputs/s5_ablation_obs/%x_%A_%a.out
-#SBATCH --error=logs/slurm_errors/s5_ablation_obs/%x_%A_%a.err
+#SBATCH --array=0-19
+#SBATCH --job-name=s5_ablation_reward
+#SBATCH --output=logs/slurm_outputs/s5_ablation_reward/%x_%A_%a.out
+#SBATCH --error=logs/slurm_errors/s5_ablation_reward/%x_%A_%a.err
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=4
@@ -34,6 +33,8 @@
 # --- COMMAND TO EXCLUDE RTX_PRO_6000 (not supported by torch==2.4.0)
 #SBATCH --exclude=warlock[41-42]
 
+set -euo pipefail
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -f "$SCRIPT_DIR/train.py" ] || [ -f "$SCRIPT_DIR/tune.py" ] || [ -f "$SCRIPT_DIR/evaluate.py" ]; then
     DEFAULT_PROJECT_ROOT="$SCRIPT_DIR"
@@ -45,7 +46,7 @@ cd "$PROJECT_ROOT"
 
 LOG_ROOT="${LOG_ROOT:-$PROJECT_ROOT/logs}"
 
-obs_modes=("base" "full" "no_wind" "no_spray_hist" "pos_only")
+conditions=("full" "no_col" "no_cov" "no_eff")
 seeds=(0 42 123 2024 9999)
 
 num_seeds=${#seeds[@]}
@@ -54,10 +55,10 @@ index=$SLURM_ARRAY_TASK_ID
 seed_idx=$(( index % num_seeds ))
 cond_idx=$(( index / num_seeds ))
 
-obs_mode=${obs_modes[$cond_idx]}
+condition=${conditions[$cond_idx]}
 seed=${seeds[$seed_idx]}
 
-echo "S5-ablation-obs | obs_mode=$obs_mode | seed=$seed | job=$SLURM_ARRAY_TASK_ID"
+echo "S5-ablation-reward | condition=$condition | seed=$seed | job=$SLURM_ARRAY_TASK_ID"
 
 conda run --no-capture-output -n robot_env python3 train.py \
     --algorithm   "CrossQ" \
@@ -65,12 +66,10 @@ conda run --no-capture-output -n robot_env python3 train.py \
     --num_robots  3 \
     --seed        $seed \
     --steps       1000000 \
-    --experiment  ablation_obs \
-    --ablation    $obs_mode \
+    --experiment  ablation_reward \
+    --ablation    $condition \
     --verbose     1 \
     --log_steps   10000 \
     --n_eval_eps   20 \
     --log_root     "$LOG_ROOT" \
     --device      cuda
-
-wait

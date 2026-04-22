@@ -6,7 +6,9 @@ evaluation CSVs.
 Figures produced (saved to figures/):
   default_*_robots.png        → fig:default_hyp  (learning curves, default HPs)
   random_*_robots.png         → fig:random_hyp   (learning curves, tuned HPs)
+  transfer_*_robots.png       → fig:transfer_hyp (learning curves, transfer)
   scalability.png             → fig:scalability  (IQM + ep-length vs N)
+  transfer_scalability.png    → optional transfer scalability figure
   wind_sensitivity.png        → fig:wind_sensitivity
   dr_curves.png               → fig:dr_curves    (DR training curves)
 
@@ -67,7 +69,8 @@ plt.rcParams.update({
 
 def load_eval_npz(log_root: str, version_fragment: str,
                   algorithm: str, num_robots: int, env_set: int,
-                  seeds=(0, 42, 123, 2024, 9999), strict: bool = False):
+                  seeds=(0, 42, 123, 2024, 9999), strict: bool = False,
+                  normalize_timesteps: bool = False):
     """
     Load eval_logs/evaluations.npz for one (alg, N, set), averaged
     across all seeds.  Matches the fixed train.py directory layout:
@@ -85,6 +88,8 @@ def load_eval_npz(log_root: str, version_fragment: str,
                 data = np.load(m, allow_pickle=True)
                 ep_rewards = data["results"].mean(axis=1)
                 timesteps  = data["timesteps"]
+                if normalize_timesteps and len(timesteps) > 0:
+                    timesteps = timesteps - timesteps[0]
                 all_runs.append((timesteps, ep_rewards))
             except Exception as e:
                 print(f"  [WARN] Could not load {m}: {e}")
@@ -104,24 +109,39 @@ def load_eval_npz(log_root: str, version_fragment: str,
 
     min_len = min(len(ts) for ts, _ in all_runs)
     ts_ref  = all_runs[0][0][:min_len]
+    for ts, _ in all_runs:
+        if not np.array_equal(ts[:min_len], ts_ref):
+            msg = (
+                f"Non-aligned timesteps for {algorithm}, N={num_robots}, "
+                f"set={env_set}."
+            )
+            if strict:
+                raise ValueError(msg)
+            print(f"  [WARN] {msg}")
+            break
     stacked = np.array([r[:min_len] for _, r in all_runs])
     return ts_ref, stacked.mean(axis=0), stacked.std(axis=0)
 
 
 def load_learning_curves_for_n(log_root: str, version_fragment: str,
                                 num_robots: int, n_sets: int = 10,
-                                strict: bool = False):
+                                strict: bool = False, env_sets=None,
+                                normalize_timesteps: bool = False):
     """
-    Aggregate learning curves across all env sets (1–n_sets) and seeds.
+    Aggregate learning curves across env sets and seeds.
     Returns dict: algorithm → (timesteps, mean_rewards, std_rewards)
     """
     curves = {}
+    if env_sets is None:
+        env_sets = range(1, n_sets + 1)
+
     for alg in ALG_ORDER:
         all_runs_ts = []
         all_runs_r  = []
-        for s in range(1, n_sets + 1):
+        for s in env_sets:
             result = load_eval_npz(log_root, version_fragment, alg, num_robots, s,
-                                   strict=strict)
+                                   strict=strict,
+                                   normalize_timesteps=normalize_timesteps)
             if result is None:
                 continue
             ts, mean_r, _ = result
@@ -132,31 +152,41 @@ def load_learning_curves_for_n(log_root: str, version_fragment: str,
             continue
 
         min_len = min(len(r) for r in all_runs_r)
-        stacked = np.array([r[:min_len] for r in all_runs_r])
         ts_ref  = all_runs_ts[0][:min_len]
+        for ts in all_runs_ts:
+            if not np.array_equal(ts[:min_len], ts_ref):
+                msg = f"Non-aligned set-level timesteps for {alg}, N={num_robots}."
+                if strict:
+                    raise ValueError(msg)
+                print(f"  [WARN] {msg}")
+                break
+        stacked = np.array([r[:min_len] for r in all_runs_r])
         curves[alg] = (ts_ref, stacked.mean(axis=0), stacked.std(axis=0))
 
     return curves
 
 
 # ================================================================
-# Figure 1 & 2: Learning curves (default / tuned)
+# Figure 1 & 2: Learning curves (default / tuned / transfer)
 # ================================================================
 
 def plot_learning_curves(log_root: str, version_fragment: str,
-                         hp_label: str, figures_dir: str, strict: bool = False):
+                         hp_label: str, figures_dir: str, strict: bool = False,
+                         env_sets=None, title_label: str = None,
+                         normalize_timesteps: bool = False):
     """
     Produce a 1×4 figure of learning curves (one panel per N).
     Saved as figures/{hp_label}_{N}_robots.png and a combined figure.
     """
     robot_counts = [2, 3, 4, 5]
+    title = title_label or f"{hp_label.replace('_', ' ').title()} Hyperparameters"
     fig, axes = plt.subplots(1, 4, figsize=(16, 4), sharey=False)
-    fig.suptitle(f"Learning Curves — {hp_label.replace('_', ' ').title()} Hyperparameters",
-                 fontsize=13, y=1.02)
+    fig.suptitle(f"Learning Curves — {title}", fontsize=13, y=1.02)
 
     for ax, N in zip(axes, robot_counts):
         curves = load_learning_curves_for_n(log_root, version_fragment, N,
-                                            strict=strict)
+                                            strict=strict, env_sets=env_sets,
+                                            normalize_timesteps=normalize_timesteps)
         for alg in ALG_ORDER:
             if alg not in curves:
                 continue
@@ -189,7 +219,8 @@ def plot_learning_curves(log_root: str, version_fragment: str,
     for N in robot_counts:
         fig2, ax2 = plt.subplots(figsize=(5, 4))
         curves = load_learning_curves_for_n(log_root, version_fragment, N,
-                                            strict=strict)
+                                            strict=strict, env_sets=env_sets,
+                                            normalize_timesteps=normalize_timesteps)
         for alg in ALG_ORDER:
             if alg not in curves:
                 continue
@@ -214,12 +245,15 @@ def plot_learning_curves(log_root: str, version_fragment: str,
 # Figure 3: Scalability (IQM + ep-length vs N)
 # ================================================================
 
-def plot_scalability(results_dir: str, figures_dir: str):
+def plot_scalability(results_dir: str, figures_dir: str,
+                     summary_filename: str = "main_tuned_summary.csv",
+                     output_filename: str = "scalability.png",
+                     title: str = "Scalability: IQM and Episode Length vs Number of Robots"):
     """
-    Reads main_tuned_summary.csv and plots IQM and mean episode length
+    Reads a main-summary CSV and plots IQM and mean episode length
     vs number of robots for the best algorithm (TRPO) and CrossQ.
     """
-    csv_path = os.path.join(results_dir, "main_tuned_summary.csv")
+    csv_path = os.path.join(results_dir, summary_filename)
     if not os.path.exists(csv_path):
         print(f"  [WARN] {csv_path} not found — skipping scalability plot.")
         return
@@ -227,7 +261,7 @@ def plot_scalability(results_dir: str, figures_dir: str):
     df = pd.read_csv(csv_path)
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(9, 4))
-    fig.suptitle("Scalability: IQM and Episode Length vs Number of Robots", fontsize=12)
+    fig.suptitle(title, fontsize=12)
 
     for alg in ["TRPO", "CrossQ", "PPO"]:
         sub = df[df["algorithm"] == alg].sort_values("num_robots")
@@ -261,7 +295,7 @@ def plot_scalability(results_dir: str, figures_dir: str):
 
     plt.tight_layout()
     os.makedirs(figures_dir, exist_ok=True)
-    out_path = os.path.join(figures_dir, "scalability.png")
+    out_path = os.path.join(figures_dir, output_filename)
     plt.savefig(out_path, bbox_inches="tight")
     plt.close()
     print(f"  Saved {out_path}")
@@ -399,8 +433,22 @@ def main():
         plot_learning_curves(args.log_root, "main_tuned",
                              "random", args.figures_dir, strict=args.strict)
 
+        print("\n── Transfer learning curves ───────────────────────────────")
+        plot_learning_curves(args.log_root, "main_transfer",
+                             "transfer", args.figures_dir, strict=args.strict,
+                             env_sets=list(range(2, 11)),
+                             title_label="Transfer Fine-Tuning",
+                             normalize_timesteps=True)
+
     print("\n── Figure 3: Scalability ───────────────────────────────────")
     plot_scalability(args.results_dir, args.figures_dir)
+    plot_scalability(
+        args.results_dir,
+        args.figures_dir,
+        summary_filename="main_transfer_summary.csv",
+        output_filename="transfer_scalability.png",
+        title="Transfer Scalability: IQM and Episode Length vs Number of Robots",
+    )
 
     print("\n── Figure 4: Wind sensitivity ──────────────────────────────")
     plot_wind_sensitivity(args.results_dir, args.log_root, args.figures_dir)

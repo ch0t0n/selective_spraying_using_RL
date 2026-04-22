@@ -7,10 +7,15 @@ experiment, ablation) combination, runs N_EVAL_EPISODES episodes, and
 appends one row to a results CSV.
 
 Usage examples:
-  # Main results (default or tuned HPs):
+  # Main results (default, tuned, or transfer):
   python evaluate.py --algorithm CrossQ --set 1 --num_robots 3 --seed 42 \
                      --experiment main --hp_tag default \
                      --log_root logs --output_csv results/results_default.csv
+
+  # Main results, transfer learning:
+  python evaluate.py --algorithm CrossQ --set 2 --num_robots 3 --seed 42 \
+                     --experiment main --hp_tag transfer \
+                     --log_root logs --output_csv results/results_transfer.csv
 
   # Reward ablation:
   python evaluate.py --algorithm CrossQ --set 1 --num_robots 3 --seed 42 \
@@ -96,8 +101,8 @@ def parse_args():
                    choices=list(EXPERIMENT_MAP.keys()))
     p.add_argument("--ablation",     type=str, default=None)
     p.add_argument("--hp_tag",       type=str, default="default",
-                   choices=["default", "tuned"],
-                   help="For experiment=main: which HP set was used")
+                   choices=["default", "tuned", "transfer"],
+                   help="For experiment=main: default, tuned, or transfer run")
     p.add_argument("--log_root",     type=str, default=os.path.join(PROJECT_ROOT, "logs"))
     p.add_argument("--output_csv",   type=str, required=True)
     p.add_argument("--n_eval_eps",   type=int, default=N_EVAL_EPISODES)
@@ -122,6 +127,16 @@ def parse_args():
         action="store_true",
         help="When eval wind is overridden, set wind and wind-direction noise to zero if the env supports it.",
     )
+    p.add_argument(
+        "--eval_dr_mode",
+        type=str,
+        default=None,
+        choices=["none", "wind", "full"],
+        help="For experiment=dr: environment dr_mode used during evaluation. "
+             "If omitted, uses the training DR mode from --ablation.",
+    )
+    p.add_argument("--pretrain_steps", type=int, default=0)
+    p.add_argument("--finetune_steps", type=int, default=0)
     return p.parse_args()
 
 # ================================================================
@@ -158,10 +173,16 @@ def upsert_csv_row_locked(csv_path: str, header: list, row: list, key_cols: list
 
             rows.append(row_dict)
 
-            with open(csv_path, "w", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=header)
-                writer.writeheader()
-                writer.writerows(rows)
+            tmp_path = f"{csv_path}.tmp.{os.getpid()}"
+            try:
+                with open(tmp_path, "w", newline="") as f:
+                    writer = csv.DictWriter(f, fieldnames=header)
+                    writer.writeheader()
+                    writer.writerows(rows)
+                os.replace(tmp_path, csv_path)
+            finally:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
         finally:
             fcntl.flock(lock_f, fcntl.LOCK_UN)
 
@@ -213,11 +234,16 @@ def build_eval_env_kwargs(args, field_info: dict,
         render_mode=None,
     )
 
-    # Pass ablation kwarg if applicable
+    # Pass ablation kwarg if applicable. For DR, --ablation identifies
+    # the trained checkpoint, while --eval_dr_mode can set a common
+    # evaluation randomization mode for controlled comparisons.
     kwarg_name = EXPERIMENT_MAP[args.experiment]
     if kwarg_name is not None:
         ablation_val = args.ablation or EXPERIMENT_DEFAULTS[args.experiment]
-        kwargs[kwarg_name] = ablation_val
+        if args.experiment == "dr" and args.eval_dr_mode is not None:
+            kwargs[kwarg_name] = args.eval_dr_mode
+        else:
+            kwargs[kwarg_name] = ablation_val
 
     if args.experiment == "ablation_reward" and args.eval_reward_ablation is not None:
         kwargs["reward_ablation"] = args.eval_reward_ablation
@@ -263,10 +289,13 @@ def evaluate(args):
     model    = AlgClass.load(model_path, device=args.device)
 
     ablation_val = args.ablation or EXPERIMENT_DEFAULTS[args.experiment]
+    total_train_steps = args.pretrain_steps + args.finetune_steps
 
     print(f"\n{'='*60}")
     print(f"  Evaluating : {args.algorithm} | {args.experiment} | {ablation_val}")
     print(f"  Env set    : {args.set}  |  N robots: {args.num_robots}  |  Seed: {args.seed}")
+    if args.experiment == "dr":
+        print(f"  Eval DR    : {args.eval_dr_mode or ablation_val}")
     print(f"  Episodes   : {args.n_eval_eps}")
     print(f"{'='*60}")
 
@@ -318,11 +347,13 @@ def evaluate(args):
     eval_reward_ablation = (
         args.eval_reward_ablation if args.experiment == "ablation_reward" else None
     )
+    eval_dr_mode = args.eval_dr_mode if args.experiment == "dr" else None
     header = [
         "algorithm", "experiment", "ablation", "hp_tag",
         "num_robots", "env_set", "seed",
+        "pretrain_steps", "finetune_steps", "total_train_steps",
         "eval_wind_min", "eval_wind_max", "eval_uncertainty_mode",
-        "eval_reward_ablation",
+        "eval_reward_ablation", "eval_dr_mode",
         "mean_reward", "std_reward", "max_reward", "iqm",
         "cvar_0.1", "mean_ep_length", "n_episodes", "elapsed_s",
         "episode_rewards_json", "episode_lengths_json",
@@ -330,8 +361,9 @@ def evaluate(args):
     row = [
         args.algorithm, args.experiment, ablation_val, args.hp_tag,
         args.num_robots, args.set, args.seed,
+        args.pretrain_steps, args.finetune_steps, total_train_steps,
         args.eval_wind_min, args.eval_wind_max, args.eval_uncertainty_mode,
-        eval_reward_ablation,
+        eval_reward_ablation, eval_dr_mode,
         f"{mean_r:.4f}", f"{std_r:.4f}", f"{max_r:.4f}", f"{iqm_r:.4f}",
         f"{cvar:.4f}", f"{mean_ep_len:.2f}", args.n_eval_eps, f"{elapsed:.1f}",
         episode_rewards_json, episode_lengths_json,
@@ -340,7 +372,7 @@ def evaluate(args):
         "algorithm", "experiment", "ablation", "hp_tag",
         "num_robots", "env_set", "seed",
         "eval_wind_min", "eval_wind_max", "eval_uncertainty_mode",
-        "eval_reward_ablation",
+        "eval_reward_ablation", "eval_dr_mode",
     ]
     upsert_csv_row_locked(args.output_csv, header, row, key_cols)
     print(f"  Upserted into {args.output_csv}")

@@ -19,12 +19,13 @@ The Python defaults now resolve through `PROJECT_ROOT`, so invoking `train.py`, 
 ```text
 logs/
   main_default/
+  main_transfer/
   main_tuned/
   ablation_reward_<condition>/
   ablation_obs_<condition>/
   ablation_uncertainty_<condition>/
   dr_<mode>/
-  step2_tune/
+  step3_tune/
   optuna_studies/
   slurm_outputs/
   slurm_errors/
@@ -34,6 +35,7 @@ logs/
 results/
   results_default.csv
   results_tuned.csv
+  results_transfer.csv
   ablation_reward.csv
   ablation_obs.csv
   ablation_uncertainty.csv
@@ -58,6 +60,7 @@ $LOG_ROOT/{version}/{algorithm}_N{num_robots}_env{set}_seed{seed}/
 | Experiment | Version directory |
 |---|---|
 | Main, default hyperparameters | `main_default` |
+| Main, transfer from Set 1 default checkpoint | `main_transfer` |
 | Main, tuned hyperparameters | `main_tuned` |
 | Reward ablation | `ablation_reward_<condition>` |
 | Observation ablation | `ablation_obs_<condition>` |
@@ -78,9 +81,17 @@ Each training run may generate:
 
 The run directory includes the seed to prevent parallel jobs with the same algorithm, robot count, and environment set from overwriting each other.
 
+Transfer-learning runs load source checkpoints from:
+
+```text
+$LOG_ROOT/main_default/{algorithm}_N{num_robots}_env1_seed{seed}/best_model/best_model.zip
+```
+
+and write target fine-tuning runs for Sets 2–10 under `main_transfer`.
+
 ## Hyperparameter tuning outputs
 
-Tuning is run through `tune.py` and the Step 2 SLURM scripts.
+Tuning is run through `tune.py` and the tuning SLURM scripts.
 
 | Output | Location | Description |
 |---|---|---|
@@ -88,7 +99,7 @@ Tuning is run through `tune.py` and the Step 2 SLURM scripts.
 | Best hyperparameters | `$LOG_ROOT/best_hyperparams.json` | JSON file containing best IQM score, parameter dictionary, and tuning context per algorithm. |
 | Best-hyperparameter lock | `$LOG_ROOT/best_hyperparams.json.lock` | File lock used while updating the shared JSON. |
 | Temporary best-HP file | `$LOG_ROOT/best_hyperparams.json.tmp.<pid>` | Atomic-write temporary file used before replacement. |
-| Tuning log root | `$LOG_ROOT/step2_tune` | Tuning log directory passed to `tune.py`. |
+| Tuning log root | `$LOG_ROOT/step3_tune` | Tuning log directory passed to `tune.py`. |
 | Console output | SLURM stdout file or terminal | Algorithm/device/storage/study header, trial IQM lines, failures, best-so-far summary, and update message. |
 
 The best-hyperparameter JSON uses this structure:
@@ -114,12 +125,17 @@ The best-hyperparameter JSON uses this structure:
 
 Evaluation is run through `evaluate.py` and writes one upserted row per evaluated run. The row is inserted or replaced under a file lock so repeated evaluations of the same key do not append duplicates.
 
+For main-experiment evaluations, `hp_tag` may be `default`, `tuned`, or `transfer`. Transfer evaluations reuse the same main-result CSV schema and write to `results/results_transfer.csv`. Under the current scripts, transfer rows record `pretrain_steps=2000000`, `finetune_steps=2000000`, and `total_train_steps=4000000`.
+
+For DR evaluations, `ablation` records the training/checkpoint DR mode, while `eval_dr_mode` records the environment DR mode used for evaluation.
+
 ### Raw result CSVs
 
 | CSV | Produced by | Description |
 |---|---|---|
 | `results/results_default.csv` | `eval_main.sh default` | Main experiment evaluations for default hyperparameters. |
 | `results/results_tuned.csv` | `eval_main.sh tuned` | Main experiment evaluations for tuned hyperparameters. |
+| `results/results_transfer.csv` | `eval_main.sh transfer` | Main experiment evaluations for transfer-learned policies on Sets 2–10. |
 | `results/ablation_reward.csv` | `eval_ablations.sh ablation_reward` | Reward-ablation evaluations. |
 | `results/ablation_obs.csv` | `eval_ablations.sh ablation_obs` | Observation-ablation evaluations. |
 | `results/ablation_uncertainty.csv` | `eval_ablations.sh ablation_uncertainty` | Train uncertainty mode × eval uncertainty mode matrix. |
@@ -145,10 +161,14 @@ hp_tag
 num_robots
 env_set
 seed
+pretrain_steps
+finetune_steps
+total_train_steps
 eval_wind_min
 eval_wind_max
 eval_uncertainty_mode
 eval_reward_ablation
+eval_dr_mode
 mean_reward
 std_reward
 max_reward
@@ -167,7 +187,7 @@ The upsert key is:
 algorithm, experiment, ablation, hp_tag,
 num_robots, env_set, seed,
 eval_wind_min, eval_wind_max,
-eval_uncertainty_mode, eval_reward_ablation
+eval_uncertainty_mode, eval_reward_ablation, eval_dr_mode
 ```
 
 ### Evaluation console output
@@ -189,6 +209,8 @@ Analysis is run through `analyze_results.py`. It consumes raw CSVs from `results
 | `results/main_default_latex_rows.txt` | LaTeX rows for the default-hyperparameter main table. |
 | `results/main_tuned_summary.csv` | Aggregated main results for tuned hyperparameters. |
 | `results/main_tuned_latex_rows.txt` | LaTeX rows for the tuned-hyperparameter main table. |
+| `results/main_transfer_summary.csv` | Aggregated main results for transfer-learned policies. |
+| `results/main_transfer_latex_rows.txt` | LaTeX rows for the transfer-learning main table. |
 | `results/ablation_reward_agg.csv` | Aggregated reward-ablation results. |
 | `results/ablation_reward_latex_rows.txt` | LaTeX rows for reward ablation. |
 | `results/ablation_obs_agg.csv` | Aggregated observation-ablation results. |
@@ -199,6 +221,23 @@ Analysis is run through `analyze_results.py`. It consumes raw CSVs from `results
 | `results/dr_results_latex_rows.txt` | LaTeX rows for domain randomization. |
 
 The analysis script prints warnings when optional input CSVs are missing, writes confirmation lines for each generated file, prints compact main-result summary tables, and ends by reporting the LaTeX row-file location.
+
+## Figure outputs
+
+Figure generation is run through `plot_figures.py`. It consumes training logs from `logs/` and summary/evaluation CSVs from `results/`.
+
+| Output | Description |
+|---|---|
+| `figures/default_learning_curves.png` | Combined default-hyperparameter learning curves. |
+| `figures/default_{N}_robots.png` | Per-robot-count default learning curves. |
+| `figures/random_learning_curves.png` | Combined tuned-hyperparameter learning curves. |
+| `figures/random_{N}_robots.png` | Per-robot-count tuned learning curves. |
+| `figures/transfer_learning_curves.png` | Combined transfer fine-tuning learning curves for target Sets 2–10. |
+| `figures/transfer_{N}_robots.png` | Per-robot-count transfer fine-tuning curves. |
+| `figures/scalability.png` | Tuned-policy IQM and episode length versus number of robots. |
+| `figures/transfer_scalability.png` | Transfer-policy IQM and episode length versus number of robots. |
+| `figures/wind_sensitivity.png` | IQM versus wind speed. |
+| `figures/dr_curves.png` | Domain-randomization training curves. |
 
 ## SLURM scheduler outputs
 
@@ -214,14 +253,16 @@ logs/slurm_errors/<job-name>/...
 | `check_gpu.sh` | `logs/slurm_outputs/gpu_check/%x_%j.out` | `logs/slurm_errors/gpu_check/%x_%j.err` |
 | `step1_crossq_default.sh` | `logs/slurm_outputs/s1_crossq_default/%x_%A_%a.out` | `logs/slurm_errors/s1_crossq_default/%x_%A_%a.err` |
 | `step1_others_default.sh` | `logs/slurm_outputs/s1_others_default/%x_%A_%a.out` | `logs/slurm_errors/s1_others_default/%x_%A_%a.err` |
-| `step2_tune_cpu.sh` | `logs/slurm_outputs/s2_tune_cpu/%x_%A_%a.out` | `logs/slurm_errors/s2_tune_cpu/%x_%A_%a.err` |
-| `step2_tune_gpu.sh` | `logs/slurm_outputs/s2_tune_gpu/%x_%A_%a.out` | `logs/slurm_errors/s2_tune_gpu/%x_%A_%a.err` |
-| `step3_crossq_tuned.sh` | `logs/slurm_outputs/s3_crossq_tuned/%x_%A_%a.out` | `logs/slurm_errors/s3_crossq_tuned/%x_%A_%a.err` |
-| `step3_others_tuned.sh` | `logs/slurm_outputs/s3_others_tuned/%x_%A_%a.out` | `logs/slurm_errors/s3_others_tuned/%x_%A_%a.err` |
-| `step4_ablation_reward.sh` | `logs/slurm_outputs/s4_ablation_reward/%x_%A_%a.out` | `logs/slurm_errors/s4_ablation_reward/%x_%A_%a.err` |
-| `step5_ablation_obs.sh` | `logs/slurm_outputs/s5_ablation_obs/%x_%A_%a.out` | `logs/slurm_errors/s5_ablation_obs/%x_%A_%a.err` |
-| `step6_ablation_uncertainty.sh` | `logs/slurm_outputs/s6_ablation_uncertainty/%x_%A_%a.out` | `logs/slurm_errors/s6_ablation_uncertainty/%x_%A_%a.err` |
-| `step7_dr.sh` | `logs/slurm_outputs/s7_dr/%x_%A_%a.out` | `logs/slurm_errors/s7_dr/%x_%A_%a.err` |
+| `step2_crossq_transfer.sh` | `logs/slurm_outputs/s2_crossq_transfer/%x_%A_%a.out` | `logs/slurm_errors/s2_crossq_transfer/%x_%A_%a.err` |
+| `step2_others_transfer.sh` | `logs/slurm_outputs/s2_others_transfer/%x_%A_%a.out` | `logs/slurm_errors/s2_others_transfer/%x_%A_%a.err` |
+| `step3_tune_cpu.sh` | `logs/slurm_outputs/s3_tune_cpu/%x_%A_%a.out` | `logs/slurm_errors/s3_tune_cpu/%x_%A_%a.err` |
+| `step3_tune_gpu.sh` | `logs/slurm_outputs/s3_tune_gpu/%x_%A_%a.out` | `logs/slurm_errors/s3_tune_gpu/%x_%A_%a.err` |
+| `step4_crossq_tuned.sh` | `logs/slurm_outputs/s4_crossq_tuned/%x_%A_%a.out` | `logs/slurm_errors/s4_crossq_tuned/%x_%A_%a.err` |
+| `step4_others_tuned.sh` | `logs/slurm_outputs/s4_others_tuned/%x_%A_%a.out` | `logs/slurm_errors/s4_others_tuned/%x_%A_%a.err` |
+| `step5_ablation_reward.sh` | `logs/slurm_outputs/s5_ablation_reward/%x_%A_%a.out` | `logs/slurm_errors/s5_ablation_reward/%x_%A_%a.err` |
+| `step6_ablation_obs.sh` | `logs/slurm_outputs/s6_ablation_obs/%x_%A_%a.out` | `logs/slurm_errors/s6_ablation_obs/%x_%A_%a.err` |
+| `step7_ablation_uncertainty.sh` | `logs/slurm_outputs/s7_ablation_uncertainty/%x_%A_%a.out` | `logs/slurm_errors/s7_ablation_uncertainty/%x_%A_%a.err` |
+| `step8_dr.sh` | `logs/slurm_outputs/s8_dr/%x_%A_%a.out` | `logs/slurm_errors/s8_dr/%x_%A_%a.err` |
 | `eval_main.sh` | `logs/slurm_outputs/eval_main/%x_%A_%a.out` | `logs/slurm_errors/eval_main/%x_%A_%a.err` |
 | `eval_ablations.sh` | `logs/slurm_outputs/eval_ablation/%x_%A_%a.out` | `logs/slurm_errors/eval_ablation/%x_%A_%a.err` |
 | `eval_wind_sweep.sh` | `logs/slurm_outputs/eval_wind_sweep/%x_%A_%a.out` | `logs/slurm_errors/eval_wind_sweep/%x_%A_%a.err` |

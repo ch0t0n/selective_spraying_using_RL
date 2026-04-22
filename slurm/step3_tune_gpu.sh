@@ -1,26 +1,31 @@
 #!/bin/bash
 # ============================================================
-# Step 2 — Hyperparameter tuning, CPU algorithms only.
+# Step 3 — Hyperparameter tuning, GPU algorithms only.
 #
 # Submit with:
-#   sbatch step2_tune_cpu.sh
+#   sbatch step3_tune_gpu.sh
 #
-# Grid: 4 CPU algorithms × 50 trials = 200 jobs → array=0-199
+# Grid: 2 GPU algorithms × 50 trials = 100 jobs → array=0-99
 # ============================================================
 
-#SBATCH --array=0-199
-#SBATCH --job-name=s2_tune_cpu
-#SBATCH --output=logs/slurm_outputs/s2_tune_cpu/%x_%A_%a.out
-#SBATCH --error=logs/slurm_errors/s2_tune_cpu/%x_%A_%a.err
+#SBATCH --array=0-99
+#SBATCH --job-name=s3_tune_gpu
+#SBATCH --output=logs/slurm_outputs/s3_tune_gpu/%x_%A_%a.out
+#SBATCH --error=logs/slurm_errors/s3_tune_gpu/%x_%A_%a.err
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=4
+#SBATCH --gpus-per-node=1
 #SBATCH --mem=8G
 #SBATCH --time=48:00:00
+#SBATCH --partition=ksu-gen-gpu.q
+#SBATCH --gres=gpu:1
 #SBATCH --export=NONE
 
 # --- COMMAND TO EXCLUDE RTX_PRO_6000 (not supported by torch==2.4.0)
 #SBATCH --exclude=warlock[41-42]
+
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -f "$SCRIPT_DIR/train.py" ] || [ -f "$SCRIPT_DIR/tune.py" ] || [ -f "$SCRIPT_DIR/evaluate.py" ]; then
@@ -35,26 +40,24 @@ BEST_JSON="${BEST_JSON:-$LOG_ROOT/best_hyperparams.json}"
 JOURNAL_DIR="${JOURNAL_DIR:-$LOG_ROOT/optuna_studies}"
 mkdir -p "$JOURNAL_DIR"
 
-algorithms=("A2C" "ARS" "PPO" "TRPO")
+algorithms=("CrossQ" "TQC")
 
 alg_idx=$(( SLURM_ARRAY_TASK_ID / 50 ))
 trial_idx=$(( SLURM_ARRAY_TASK_ID % 50 ))
 algorithm=${algorithms[$alg_idx]}
 storage="${JOURNAL_DIR}/${algorithm}_journal.log"
 
-echo "S2-tune-cpu | alg=${algorithm} | trial=${trial_idx} | job=${SLURM_ARRAY_TASK_ID}"
+echo "S3-tune-gpu | alg=${algorithm} | trial=${trial_idx} | job=${SLURM_ARRAY_TASK_ID}"
 
 conda run --no-capture-output -n robot_env python3 tune.py \
     --algorithm   "$algorithm" \
-    --device      cpu \
+    --device      cuda \
     --n_trials    1 \
     --tune_steps  500000 \
     --storage     "$storage" \
     --study_name  "${algorithm}_tune" \
     --output_json "$BEST_JSON" \
-    --log_root    "$LOG_ROOT/step2_tune" \
+    --log_root    "$LOG_ROOT/step3_tune" \
     --set         1 \
     --num_robots  3 \
     --tune_seed   42
-
-wait

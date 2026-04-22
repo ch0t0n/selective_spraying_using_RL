@@ -2,7 +2,7 @@
 # ============================================================
 # eval_ablations.sh — evaluate.py for ablation + DR experiments.
 #
-# Submit after steps 4, 5, 6, 7 are complete.
+# Submit after steps 5, 6, 7, 8 are complete.
 # Usage:
 #   sbatch --array=0-19  eval_ablations.sh ablation_reward
 #   sbatch --array=0-24  eval_ablations.sh ablation_obs
@@ -18,6 +18,8 @@
 #SBATCH --mem=4G
 #SBATCH --time=2:00:00
 #SBATCH --export=NONE
+
+set -euo pipefail
 
 EXPERIMENT=${1:-ablation_reward}
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -94,6 +96,7 @@ elif [ "$EXPERIMENT" == "dr" ]; then
     num_dr=${#dr_modes[@]}
     num_sets=${#sets[@]}
     num_robots=${#robots[@]}
+    eval_dr_mode="${EVAL_DR_MODE:-none}"
     seed_idx=$(( index % num_seeds ))
     robot_idx=$(( (index / num_seeds) % num_robots ))
     set_idx=$(( (index / (num_seeds * num_robots)) % num_sets ))
@@ -102,7 +105,7 @@ elif [ "$EXPERIMENT" == "dr" ]; then
     set=${sets[$set_idx]}
     num_robots_value=${robots[$robot_idx]}
     seed=${seeds[$seed_idx]}
-    echo "eval | dr | dr_mode=$dr_mode | set=$set | robots=$num_robots_value | seed=$seed"
+    echo "eval | dr | dr_mode=$dr_mode | eval_dr=$eval_dr_mode | set=$set | robots=$num_robots_value | seed=$seed"
 
     # DR training samples wind in [0.0, 1.0] m/s, so in-distribution covers that full range.
     # OOD starts at 1.0 m/s to avoid mixing seen and unseen wind speeds.
@@ -110,6 +113,7 @@ elif [ "$EXPERIMENT" == "dr" ]; then
     conda run --no-capture-output -n robot_env python3 evaluate.py \
         --algorithm  CrossQ --set $set --num_robots $num_robots_value --seed $seed \
         --experiment dr --ablation $dr_mode \
+        --eval_dr_mode $eval_dr_mode \
         --eval_wind_min 0.0 --eval_wind_max 1.0 \
         --freeze_eval_wind_noise \
         --log_root "$LOG_ROOT" \
@@ -120,11 +124,10 @@ elif [ "$EXPERIMENT" == "dr" ]; then
     conda run --no-capture-output -n robot_env python3 evaluate.py \
         --algorithm  CrossQ --set $set --num_robots $num_robots_value --seed $seed \
         --experiment dr --ablation $dr_mode \
+        --eval_dr_mode $eval_dr_mode \
         --eval_wind_min 1.0 --eval_wind_max 2.0 \
         --freeze_eval_wind_noise \
         --log_root "$LOG_ROOT" \
         --output_csv "$RESULTS_DIR/dr_OOD.csv" --n_eval_eps 50 \
         --device cpu
 fi
-
-wait

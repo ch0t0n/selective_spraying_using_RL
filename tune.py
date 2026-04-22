@@ -69,7 +69,7 @@ def parse_args():
                         "logs/optuna_studies/CrossQ_journal.log")
     p.add_argument("--study_name",  required=True)
     p.add_argument("--output_json", default=os.path.join(PROJECT_ROOT, "logs", "best_hyperparams.json"))
-    p.add_argument("--log_root",    default=os.path.join(PROJECT_ROOT, "logs", "step2_tune"))
+    p.add_argument("--log_root",    default=os.path.join(PROJECT_ROOT, "logs", "step3_tune"))
     p.add_argument("--set",         type=int, default=ENV_VAR)
     p.add_argument("--num_robots",  type=int, default=NUM_ROBOTS)
     p.add_argument("--tune_seed",   type=int, default=TUNE_SEED)

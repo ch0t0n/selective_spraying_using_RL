@@ -1,18 +1,26 @@
 #!/bin/bash
 # ============================================================
-# Step 3 — Main results, TUNED hyperparameters, CrossQ (GPU)
+# Step 8 — Domain Randomization (CrossQ, GPU)
 #
-# Identical grid to Step 1 but passes --hyperparams_json so
-# train.py loads the Optuna-tuned HPs produced by Step 2.
+# Three DR training conditions:
+#   0 → none   (standard, no DR)
+#   1 → wind   (re-sample wind each episode: U(0,1) m/s, U(0,2π))
+#   2 → full   (wind + actuation noise + spray radius + mass + thrust)
 #
-# Grid: 1 alg × 10 env sets × 4 robot counts × 5 seeds
-# Total jobs: 200  →  array=0-199
+# Grid: 3 DR modes × 10 env sets × 4 robot counts × 5 seeds
+# Total jobs: 600  →  array=0-599
+#
+# Index layout (innermost → outermost):
+#   seed_idx   = index % 5
+#   robot_idx  = (index // 5) % 4
+#   set_idx    = (index // 20) % 10
+#   dr_idx     = index // 200
 # ============================================================
 
-#SBATCH --array=0-199
-#SBATCH --job-name=s3_crossq_tuned
-#SBATCH --output=logs/slurm_outputs/s3_crossq_tuned/%x_%A_%a.out
-#SBATCH --error=logs/slurm_errors/s3_crossq_tuned/%x_%A_%a.err
+#SBATCH --array=0-599
+#SBATCH --job-name=s8_dr
+#SBATCH --output=logs/slurm_outputs/s8_dr/%x_%A_%a.out
+#SBATCH --error=logs/slurm_errors/s8_dr/%x_%A_%a.err
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=4
@@ -26,6 +34,8 @@
 # --- COMMAND TO EXCLUDE RTX_PRO_6000 (not supported by torch==2.4.0)
 #SBATCH --exclude=warlock[41-42]
 
+set -euo pipefail
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -f "$SCRIPT_DIR/train.py" ] || [ -f "$SCRIPT_DIR/tune.py" ] || [ -f "$SCRIPT_DIR/evaluate.py" ]; then
     DEFAULT_PROJECT_ROOT="$SCRIPT_DIR"
@@ -37,11 +47,12 @@ cd "$PROJECT_ROOT"
 
 LOG_ROOT="${LOG_ROOT:-$PROJECT_ROOT/logs}"
 
-algorithms=("CrossQ")
+dr_modes=("none" "wind" "full")
 sets=(1 2 3 4 5 6 7 8 9 10)
 robots=(2 3 4 5)
 seeds=(0 42 123 2024 9999)
 
+num_dr=${#dr_modes[@]}
 num_sets=${#sets[@]}
 num_robots=${#robots[@]}
 num_seeds=${#seeds[@]}
@@ -50,30 +61,26 @@ index=$SLURM_ARRAY_TASK_ID
 seed_idx=$(( index % num_seeds ))
 robot_idx=$(( (index / num_seeds) % num_robots ))
 set_idx=$(( (index / (num_seeds * num_robots)) % num_sets ))
-alg_idx=$(( index / (num_seeds * num_robots * num_sets) ))
+dr_idx=$(( index / (num_seeds * num_robots * num_sets) ))
 
-algorithm=${algorithms[$alg_idx]}
+dr_mode=${dr_modes[$dr_idx]}
 set=${sets[$set_idx]}
 num_robots_value=${robots[$robot_idx]}
 seed=${seeds[$seed_idx]}
-steps=2000000
+steps=1000000
 
-BEST_JSON="${BEST_JSON:-$LOG_ROOT/best_hyperparams.json}"
-
-echo "S3-CrossQ-tuned | alg=$algorithm | set=$set | robots=$num_robots_value | seed=$seed | job=$SLURM_ARRAY_TASK_ID"
+echo "S8-DR | dr_mode=$dr_mode | set=$set | robots=$num_robots_value | seed=$seed | job=$SLURM_ARRAY_TASK_ID"
 
 conda run --no-capture-output -n robot_env python3 train.py \
-    --algorithm        $algorithm \
-    --set              $set \
-    --num_robots       $num_robots_value \
-    --seed             $seed \
-    --steps            $steps \
-    --experiment       main \
-    --hyperparams_json $BEST_JSON \
-    --verbose          1 \
-    --log_steps        10000 \
-    --n_eval_eps        20 \
-    --log_root          "$LOG_ROOT" \
-    --device           cuda
-
-wait
+    --algorithm   "CrossQ" \
+    --set         $set \
+    --num_robots  $num_robots_value \
+    --seed        $seed \
+    --steps       $steps \
+    --experiment  dr \
+    --ablation    $dr_mode \
+    --verbose     1 \
+    --log_steps   10000 \
+    --n_eval_eps   20 \
+    --log_root     "$LOG_ROOT" \
+    --device      cuda

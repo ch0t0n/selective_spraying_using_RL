@@ -1,15 +1,19 @@
 #!/bin/bash
 # ============================================================
-# Step 4 — Ablation: Reward function components (CrossQ, GPU)
+# Step 7 — Ablation: Physical uncertainty model (CrossQ, GPU)
 #
 # Fixed: CrossQ, N = 3, env variation 1, 1,000,000 timesteps
-# Grid:  4 reward conditions × 5 seeds = 20 jobs
+# Grid:  4 uncertainty conditions × 5 seeds = 20 jobs
 #
-# conditions:
-#   0 → full     (all reward terms — baseline)
-#   1 → no_col   (collision penalty + termination disabled)
-#   2 → no_cov   (coverage terms disabled)
-#   3 → no_eff   (efficiency terms disabled)
+# uncertainty_mode:
+#   0 → full          (wind + actuation + spray noise — default)
+#   1 → wind_only     (only wind noise active)
+#   2 → act_only      (only actuation noise active)
+#   3 → deterministic (all noise sources disabled)
+#
+# This script only trains the four uncertainty-mode policies.
+# Cross-evaluation under all train × eval uncertainty conditions
+# is performed later by evaluate.py via eval_ablations.sh.
 #
 # Index layout:
 #   seed_idx = index % 5
@@ -17,9 +21,9 @@
 # ============================================================
 
 #SBATCH --array=0-19
-#SBATCH --job-name=s4_ablation_reward
-#SBATCH --output=logs/slurm_outputs/s4_ablation_reward/%x_%A_%a.out
-#SBATCH --error=logs/slurm_errors/s4_ablation_reward/%x_%A_%a.err
+#SBATCH --job-name=s7_ablation_uncertainty
+#SBATCH --output=logs/slurm_outputs/s7_ablation_uncertainty/%x_%A_%a.out
+#SBATCH --error=logs/slurm_errors/s7_ablation_uncertainty/%x_%A_%a.err
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=4
@@ -33,6 +37,8 @@
 # --- COMMAND TO EXCLUDE RTX_PRO_6000 (not supported by torch==2.4.0)
 #SBATCH --exclude=warlock[41-42]
 
+set -euo pipefail
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -f "$SCRIPT_DIR/train.py" ] || [ -f "$SCRIPT_DIR/tune.py" ] || [ -f "$SCRIPT_DIR/evaluate.py" ]; then
     DEFAULT_PROJECT_ROOT="$SCRIPT_DIR"
@@ -44,7 +50,7 @@ cd "$PROJECT_ROOT"
 
 LOG_ROOT="${LOG_ROOT:-$PROJECT_ROOT/logs}"
 
-conditions=("full" "no_col" "no_cov" "no_eff")
+uncertainty_modes=("full" "wind_only" "act_only" "deterministic")
 seeds=(0 42 123 2024 9999)
 
 num_seeds=${#seeds[@]}
@@ -53,10 +59,10 @@ index=$SLURM_ARRAY_TASK_ID
 seed_idx=$(( index % num_seeds ))
 cond_idx=$(( index / num_seeds ))
 
-condition=${conditions[$cond_idx]}
+uncertainty_mode=${uncertainty_modes[$cond_idx]}
 seed=${seeds[$seed_idx]}
 
-echo "S4-ablation-reward | condition=$condition | seed=$seed | job=$SLURM_ARRAY_TASK_ID"
+echo "S7-ablation-uncertainty | mode=$uncertainty_mode | seed=$seed | job=$SLURM_ARRAY_TASK_ID"
 
 conda run --no-capture-output -n robot_env python3 train.py \
     --algorithm   "CrossQ" \
@@ -64,12 +70,10 @@ conda run --no-capture-output -n robot_env python3 train.py \
     --num_robots  3 \
     --seed        $seed \
     --steps       1000000 \
-    --experiment  ablation_reward \
-    --ablation    $condition \
+    --experiment  ablation_uncertainty \
+    --ablation    $uncertainty_mode \
     --verbose     1 \
     --log_steps   10000 \
     --n_eval_eps   20 \
     --log_root     "$LOG_ROOT" \
     --device      cuda
-
-wait

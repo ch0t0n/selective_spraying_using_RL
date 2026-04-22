@@ -7,6 +7,7 @@ full_experiments.tex.
 Outputs (written to results/):
   results_default.csv         → tab:default_hyp
   results_tuned.csv           → tab:random_hyp
+  results_transfer.csv        → tab:transfer_hyp
   ablation_reward_agg.csv     → tab:ablation_reward
   ablation_obs_agg.csv        → tab:ablation_obs
   ablation_uncertainty_agg.csv→ tab:ablation_uncertainty
@@ -184,14 +185,15 @@ def paired_wilcoxon_between_algs(
 def mark_best_main_paired(
     summary: pd.DataFrame,
     df_pairs: pd.DataFrame,
-    value_col: str = "mean_reward",
+    rank_col: str = "iqm",
+    test_col: str = "mean_reward",
     alpha: float = 0.05,
 ) -> pd.DataFrame:
     summary = summary.copy()
     summary["is_best"] = False
 
     for N, grp in summary.groupby("num_robots"):
-        sorted_grp = grp.sort_values(value_col, ascending=False)
+        sorted_grp = grp.sort_values(rank_col, ascending=False)
 
         if len(sorted_grp) < 2:
             summary.loc[sorted_grp.index[0], "is_best"] = True
@@ -208,7 +210,7 @@ def mark_best_main_paired(
             num_robots=N,
             alg_a=best_alg,
             alg_b=second_alg,
-            value_col=value_col,
+            value_col=test_col,
         )
 
         summary.loc[best_idx, "is_best"] = p < alpha
@@ -216,12 +218,12 @@ def mark_best_main_paired(
     return summary
 
 # ================================================================
-# Main results (default / tuned HPs)
+# Main results (default / tuned / transfer)
 # ================================================================
 
 def process_main(results_dir: str, hp_tag: str, strict: bool = False) -> pd.DataFrame:
     """
-    Aggregate results_default.csv or results_tuned.csv.
+    Aggregate results_default.csv, results_tuned.csv, or results_transfer.csv.
     Returns a DataFrame with one row per (algorithm, num_robots),
     columns: mean_reward, std_reward, iqm, max_reward, raw_rewards.
     """
@@ -235,6 +237,10 @@ def process_main(results_dir: str, hp_tag: str, strict: bool = False) -> pd.Data
     df["mean_reward"] = df["mean_reward"].astype(float)
     if "mean_ep_length" in df.columns:
         df["mean_ep_length"] = df["mean_ep_length"].astype(float)
+    compute_cols = ["pretrain_steps", "finetune_steps", "total_train_steps"]
+    for c in compute_cols:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
     # checks
     required_cols = {"algorithm", "num_robots", "env_set", "seed", "mean_reward"}
     missing = required_cols - set(df.columns)
@@ -242,12 +248,13 @@ def process_main(results_dir: str, hp_tag: str, strict: bool = False) -> pd.Data
         raise ValueError(f"Missing required columns in {csv_path}: {missing}")
     
     if strict:
+        expected_sets = list(range(2, 11)) if hp_tag == "transfer" else list(range(1, 11))
         require_grid_complete(
             df,
             expected={
                 "algorithm": ["A2C", "ARS", "PPO", "TQC", "TRPO", "CrossQ"],
                 "num_robots": [2, 3, 4, 5],
-                "env_set": list(range(1, 11)),
+                "env_set": expected_sets,
                 "seed": [0, 42, 123, 2024, 9999],
             },
             label=f"main {hp_tag}",
@@ -258,6 +265,9 @@ def process_main(results_dir: str, hp_tag: str, strict: bool = False) -> pd.Data
     agg_map = {"mean_reward": "mean"}
     if "mean_ep_length" in df.columns:
         agg_map["mean_ep_length"] = "mean"
+    for c in compute_cols:
+        if c in df.columns:
+            agg_map[c] = "mean"
     df_pairs = (
         df.groupby(["algorithm", "num_robots", "env_set", "seed"], as_index=False)
           .agg(agg_map)
@@ -266,20 +276,44 @@ def process_main(results_dir: str, hp_tag: str, strict: bool = False) -> pd.Data
     rows = []
     for (alg, N), grp in df_pairs.groupby(["algorithm", "num_robots"]):
         r = grp["mean_reward"].astype(float).values   # one row per seed×set
-        raw_grp = df[(df["algorithm"] == alg) & (df["num_robots"] == N)]
-        episode_r = extract_episode_rewards(raw_grp)
-        iqm_vals = episode_r if len(episode_r) else r
+
+        # source_grp = df[
+        #     (df["algorithm"] == alg) &
+        #     (df["num_robots"] == N)
+        # ]
+        # ep_r = extract_episode_rewards(source_grp)
+
         row = dict(
             algorithm=alg,
             num_robots=N,
             mean_reward=float(np.mean(r)),
             std_reward=float(np.std(r)),
             max_reward=float(np.max(r)),
-            iqm=compute_iqm(iqm_vals),
+            iqm=compute_iqm(r),
+            # metric_scope="run_mean",
+            # mean_reward_episode=float(np.mean(ep_r)) if len(ep_r) else float("nan"),
+            # std_reward_episode=float(np.std(ep_r)) if len(ep_r) else float("nan"),
+            # max_reward_episode=float(np.max(ep_r)) if len(ep_r) else float("nan"),
+            # iqm_episode=compute_iqm(ep_r) if len(ep_r) else float("nan"),
             raw_rewards=list(r),
         )
         if "mean_ep_length" in grp.columns:
             row["mean_ep_length"] = float(np.mean(grp["mean_ep_length"].astype(float).values))
+        for c in compute_cols:
+            if c in grp.columns:
+                vals = grp[c].dropna().astype(float).values
+                if len(vals):
+                    row[c] = int(round(float(np.mean(vals))))
+
+        # if hp_tag == "tuned":
+        #     row["hparam_search_steps_per_algorithm"] = 50 * 500_000
+        # else:
+        #     row["hparam_search_steps_per_algorithm"] = 0
+
+        # row["total_train_steps_plus_search"] = int(
+        #     row.get("total_train_steps", 0) +
+        #     row["hparam_search_steps_per_algorithm"]
+        # )
         rows.append(row)
 
     summary = pd.DataFrame(rows)
@@ -288,7 +322,8 @@ def process_main(results_dir: str, hp_tag: str, strict: bool = False) -> pd.Data
     summary = mark_best_main_paired(
         summary,
         df_pairs=df_pairs,
-        value_col="mean_reward",
+        rank_col="iqm",
+        test_col="mean_reward",
         alpha=0.05,
     )
 
@@ -307,9 +342,23 @@ def _write_latex_main(summary: pd.DataFrame, hp_tag: str, results_dir: str):
     algorithms = ["A2C", "ARS", "PPO", "TQC", "TRPO", "CrossQ"]
     robot_counts = [2, 3, 4, 5]
 
+    table_labels = {
+        "default":  "default_hyp",
+        "tuned":    "random_hyp",
+        "transfer": "transfer_hyp",
+    }
+
     lines = []
-    lines.append(f"% LaTeX table rows for tab:{'default' if hp_tag == 'default' else 'random'}_hyp")
+    lines.append(f"% LaTeX table rows for tab:{table_labels.get(hp_tag, hp_tag)}")
     lines.append(f"% hp_tag = {hp_tag}")
+    # lines.append("% Cell format: mean ± std (IQM).")
+    # lines.append("% mean/std/IQM are computed over one mean_reward per algorithm × N × env_set × seed.")
+    # lines.append("% Episode-level metrics are also written to main_*_summary.csv as *_episode columns.")
+    # if hp_tag == "tuned":
+    #     lines.append("% Tuned-policy cells show final-policy evaluation reward only.")
+    #     lines.append("% Hyperparameter-search cost is recorded in main_tuned_summary.csv.")
+    # if hp_tag == "transfer":
+    #     lines.append("% Transfer rows include source pretraining and target fine-tuning steps in main_transfer_summary.csv.")
     lines.append("")
 
     for alg in algorithms:
@@ -320,12 +369,11 @@ def _write_latex_main(summary: pd.DataFrame, hp_tag: str, results_dir: str):
                 cells.append("---")
             else:
                 r = row.iloc[0]
-                dagger = r"$^\dagger$" if r["is_best"] else ""
-                s = f"${r['mean_reward']:.1f} \\pm {r['std_reward']:.1f}\\ ({r['iqm']:.1f}){dagger}$"
+                dagger = r"^\dagger" if r["is_best"] else ""
+                body = f"{r['mean_reward']:.1f} \\pm {r['std_reward']:.1f}\\ ({r['iqm']:.1f}){dagger}"
                 if r["is_best"]:
-                    s = r"\mathbf{" + s[1:-1] + "}" 
-                    s = "$" + s + "$"
-                cells.append(s)
+                    body = r"\mathbf{" + body + "}"
+                cells.append("$" + body + "$")
         lines.append(f"{alg} & " + " & ".join(cells) + r" \\")
 
     out_path = os.path.join(results_dir, f"main_{hp_tag}_latex_rows.txt")
@@ -640,6 +688,10 @@ def main():
     print("\n── Main results: tuned HPs ─────────────────────────────────")
     tuned_summary = process_main(args.results_dir, "tuned", strict=args.strict)
     print_summary_table(tuned_summary, "Main results", "tuned")
+
+    print("\n── Main results: transfer learning ─────────────────────────")
+    transfer_summary = process_main(args.results_dir, "transfer", strict=args.strict)
+    print_summary_table(transfer_summary, "Main results", "transfer")
 
     print("\n── Reward ablation ─────────────────────────────────────────")
     process_ablation_reward(args.results_dir)

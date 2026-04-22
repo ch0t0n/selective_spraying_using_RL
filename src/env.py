@@ -136,10 +136,10 @@ class MultiRobotEnv(gym.Env):
         # These are the *nominal* values; DR "full" may override
         # action_noise_std at the start of each episode.
         _noise = {
-            "full":          dict(wind=0.20, wind_dir=5.0, action=0.10, spray=0.05, obs=0.01),
-            "wind_only":     dict(wind=0.20, wind_dir=5.0, action=0.00, spray=0.00, obs=0.00),
-            "act_only":      dict(wind=0.00, wind_dir=0.0, action=0.10, spray=0.00, obs=0.00),
-            "deterministic": dict(wind=0.00, wind_dir=0.0, action=0.00, spray=0.00, obs=0.00),
+            "full":          dict(wind=0.20, wind_dir=5.0, action=0.10, spray=0.05, obs=0.01, init_pos=0.50),
+            "wind_only":     dict(wind=0.20, wind_dir=5.0, action=0.00, spray=0.00, obs=0.00, init_pos=0.00),
+            "act_only":      dict(wind=0.00, wind_dir=0.0, action=0.10, spray=0.00, obs=0.00, init_pos=0.00),
+            "deterministic": dict(wind=0.00, wind_dir=0.0, action=0.00, spray=0.00, obs=0.00, init_pos=0.00),
         }[uncertainty_mode]
 
         self.wind_noise_std         = _noise["wind"]
@@ -147,7 +147,7 @@ class MultiRobotEnv(gym.Env):
         self.action_noise_std       = _noise["action"]
         self.spray_noise_std        = _noise["spray"]
         self.obs_noise_std          = _noise["obs"]
-        self.init_position_noise    = 0.5
+        self.init_position_noise    = _noise["init_pos"]
 
         if wind_noise_override is not None:
             self.wind_noise_std = float(wind_noise_override)
@@ -288,7 +288,7 @@ class MultiRobotEnv(gym.Env):
             self.thrust_power     = 0.5 * float(self.np_random.uniform(0.8, 1.2))
 
         # ── Randomise starting positions ─────────────────────────────
-        init_noise = 0.0 if self.uncertainty_mode == "deterministic" else self.init_position_noise
+        init_noise = self.init_position_noise
         self.robot_positions = self.init_robot_positions + self.np_random.normal(
             0, init_noise, self.init_robot_positions.shape)
 
@@ -427,7 +427,7 @@ class MultiRobotEnv(gym.Env):
                     reward -= 1000.0                                        # Large negative reward for collision
                     terminated = True
                 # Note to Jahid: Should we always terminate? If we terminate, the agent can learn to avoid collision
-                terminated = True   # COMMENT OUT ?
+                # terminated = True   # COMMENT OUT ?
 
         # ── Build observation & info ──────────────────────────────────
         obs, info = self._get_obs()

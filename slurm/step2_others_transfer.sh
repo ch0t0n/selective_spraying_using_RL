@@ -1,24 +1,35 @@
 #!/bin/bash
 # ============================================================
-# Step 3 — Main results, TUNED hyperparameters, Others (CPU)
+# Step 2 — Transfer learning, Others (CPU)
 #
-# Grid: 5 algs × 10 env sets × 4 robot counts × 5 seeds
-# Total jobs: 1000  →  array=0-999
+# Source: Step 1 default checkpoint on env set 1.
+# Target: env sets 2–10, same algorithm, robot count, and seed.
+#
+# Grid: 5 algs × 9 target env sets × 4 robot counts × 5 seeds
+# Total jobs: 900  →  array=0-899
+#
+# Index layout (innermost → outermost):
+#   seed_idx  = index % 5
+#   robot_idx = (index // 5) % 4
+#   set_idx   = (index // 20) % 9
+#   alg_idx   = index // 180
 # ============================================================
 
-#SBATCH --array=0-999
-#SBATCH --job-name=s3_others_tuned
-#SBATCH --output=logs/slurm_outputs/s3_others_tuned/%x_%A_%a.out
-#SBATCH --error=logs/slurm_errors/s3_others_tuned/%x_%A_%a.err
+#SBATCH --array=0-899
+#SBATCH --job-name=s2_others_transfer
+#SBATCH --output=logs/slurm_outputs/s2_others_transfer/%x_%A_%a.out
+#SBATCH --error=logs/slurm_errors/s2_others_transfer/%x_%A_%a.err
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=8G
+#SBATCH --mem=4G
 #SBATCH --time=48:00:00
 #SBATCH --export=NONE
 
 # --- COMMAND TO EXCLUDE RTX_PRO_6000 (not supported by torch==2.4.0)
 #SBATCH --exclude=warlock[41-42]
+
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -f "$SCRIPT_DIR/train.py" ] || [ -f "$SCRIPT_DIR/tune.py" ] || [ -f "$SCRIPT_DIR/evaluate.py" ]; then
@@ -32,9 +43,10 @@ cd "$PROJECT_ROOT"
 LOG_ROOT="${LOG_ROOT:-$PROJECT_ROOT/logs}"
 
 algorithms=("A2C" "ARS" "PPO" "TQC" "TRPO")
-sets=(1 2 3 4 5 6 7 8 9 10)
+sets=(2 3 4 5 6 7 8 9 10)
 robots=(2 3 4 5)
 seeds=(0 42 123 2024 9999)
+source_set=1
 
 num_sets=${#sets[@]}
 num_robots=${#robots[@]}
@@ -52,21 +64,19 @@ num_robots_value=${robots[$robot_idx]}
 seed=${seeds[$seed_idx]}
 steps=2000000
 
-BEST_JSON="${BEST_JSON:-$LOG_ROOT/best_hyperparams.json}"
+SOURCE_MODEL="$LOG_ROOT/main_default/${algorithm}_N${num_robots_value}_env${source_set}_seed${seed}/best_model/best_model.zip"
 
-echo "S3-others-tuned | alg=$algorithm | set=$set | robots=$num_robots_value | seed=$seed | job=$SLURM_ARRAY_TASK_ID"
+echo "S2-others-transfer | alg=$algorithm | source_set=$source_set | target_set=$set | robots=$num_robots_value | seed=$seed | job=$SLURM_ARRAY_TASK_ID"
 
 conda run --no-capture-output -n robot_env python3 train.py \
-    --algorithm        $algorithm \
-    --set              $set \
-    --num_robots       $num_robots_value \
-    --seed             $seed \
-    --steps            $steps \
-    --experiment       main \
-    --hyperparams_json $BEST_JSON \
-    --verbose          1 \
-    --log_steps        10000 \
-    --n_eval_eps        20 \
-    --log_root          "$LOG_ROOT"
-
-wait
+    --algorithm     $algorithm \
+    --set           $set \
+    --num_robots    $num_robots_value \
+    --seed          $seed \
+    --steps         $steps \
+    --experiment    main \
+    --transfer_from "$SOURCE_MODEL" \
+    --verbose       1 \
+    --log_steps     10000 \
+    --n_eval_eps     20 \
+    --log_root       "$LOG_ROOT"

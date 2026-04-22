@@ -3,7 +3,7 @@
 # eval_wind_sweep.sh — Wind sensitivity sweep for Figure 4.
 #
 # Evaluates CrossQ under 10 wind-speed bands for both standard
-# and DR-trained policies.  Run AFTER step7_dr.sh completes.
+# and DR-trained policies.  Run AFTER step8_dr.sh completes.
 #
 # Grid: 2 dr_modes × 10 wind bins × 5 seeds = 100 jobs
 # ============================================================
@@ -18,6 +18,8 @@
 #SBATCH --time=2:00:00
 #SBATCH --export=NONE
 
+set -euo pipefail
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -f "$SCRIPT_DIR/train.py" ] || [ -f "$SCRIPT_DIR/tune.py" ] || [ -f "$SCRIPT_DIR/evaluate.py" ]; then
     DEFAULT_PROJECT_ROOT="$SCRIPT_DIR"
@@ -28,6 +30,7 @@ PROJECT_ROOT="${PROJECT_ROOT:-$DEFAULT_PROJECT_ROOT}"
 cd "$PROJECT_ROOT"
 LOG_ROOT="${LOG_ROOT:-$PROJECT_ROOT/logs}"
 RESULTS_DIR="${RESULTS_DIR:-$PROJECT_ROOT/results}"
+eval_dr_mode="${EVAL_DR_MODE:-none}"
 
 seeds=(0 42 123 2024 9999)
 dr_modes=("none" "full")
@@ -51,7 +54,7 @@ wind_max=${wind_maxs[$bin_idx]}
 
 OUT_CSV="$RESULTS_DIR/wind_sweep.csv"
 
-echo "wind_sweep | dr_mode=$dr_mode | wind=[$wind_min,$wind_max] | seed=$seed"
+echo "wind_sweep | dr_mode=$dr_mode | eval_dr=$eval_dr_mode | wind=[$wind_min,$wind_max] | seed=$seed"
 
 conda run --no-capture-output -n robot_env python3 evaluate.py \
     --algorithm      CrossQ \
@@ -60,6 +63,7 @@ conda run --no-capture-output -n robot_env python3 evaluate.py \
     --seed           $seed \
     --experiment     dr \
     --ablation       $dr_mode \
+    --eval_dr_mode   $eval_dr_mode \
     --eval_wind_min  $wind_min \
     --eval_wind_max  $wind_max \
     --freeze_eval_wind_noise \
@@ -67,5 +71,3 @@ conda run --no-capture-output -n robot_env python3 evaluate.py \
     --output_csv     "$OUT_CSV" \
     --n_eval_eps     50 \
     --device         cpu
-
-wait
