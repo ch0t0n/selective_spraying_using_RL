@@ -1,0 +1,455 @@
+# Reproduction Guide: From Training to Filled LaTeX Tables and Figures
+
+> All commands assume your working directory is the project root.
+> If you submit jobs from another directory, set `PROJECT_ROOT` before running
+> `sbatch`, e.g. `export PROJECT_ROOT=/path/to/project/root`.
+> The SLURM output directives use repository-relative `logs/...` paths, so
+> submit from the project root unless you override `--output` and `--error`.
+
+---
+
+## 0. Pre-flight Checks
+
+### 0-A. Confirm environment and working directory
+
+All SLURM scripts run Python through the conda environment `robot_env`.
+Submit from the project root unless you explicitly set `PROJECT_ROOT`.
+
+```bash
+conda activate robot_env
+pwd
+```
+
+### 0-B. Create output directories
+
+```bash
+mkdir -p results figures logs/optuna_studies
+for d in \
+    gpu_check \
+    s1_crossq_default s1_others_default \
+    s2_crossq_transfer s2_others_transfer \
+    s3_tune_cpu s3_tune_gpu \
+    s4_crossq_tuned s4_others_tuned \
+    s5_ablation_reward s6_ablation_obs s7_ablation_uncertainty s8_dr \
+    eval_main eval_ablation eval_wind_sweep
+do
+    mkdir -p "logs/slurm_outputs/$d" "logs/slurm_errors/$d"
+done
+```
+
+### 0-C. Confirm script locations
+
+The repository expects the SLURM scripts under `slurm/`:
+```
+slurm/eval_main.sh
+slurm/eval_ablations.sh
+slurm/eval_wind_sweep.sh
+slurm/step1_crossq_default.sh
+slurm/step1_others_default.sh
+slurm/step2_crossq_transfer.sh
+slurm/step2_others_transfer.sh
+slurm/step3_tune_cpu.sh
+slurm/step3_tune_gpu.sh
+slurm/step4_crossq_tuned.sh
+slurm/step4_others_tuned.sh
+slurm/step5_ablation_reward.sh
+slurm/step6_ablation_obs.sh
+slurm/step7_ablation_uncertainty.sh
+slurm/step8_dr.sh
+```
+
+---
+
+## 1. Run Step 1 — Default Hyperparameters
+
+> **Prerequisites:** conda env `robot_env` available; output directories created (Step 0-B).
+
+Submit two job arrays — one for CrossQ (GPU), one for all others (CPU):
+
+```bash
+sbatch slurm/step1_crossq_default.sh     # 200 jobs (1 alg × 10 sets × 4 N × 5 seeds)
+sbatch slurm/step1_others_default.sh     # 1000 jobs (5 algs × 10 sets × 4 N × 5 seeds)
+```
+
+**Wait for all jobs to finish** before proceeding.  Monitor with:
+```bash
+squeue -u $USER
+```
+
+**What this produces:**
+```
+logs/main_default/{ALG}_N{N}_env{SET}_seed{SEED}/
+    best_model/best_model.zip
+    eval_logs/evaluations.npz
+    episode_metrics.csv
+    *.csv  (SB3 training log)
+```
+
+---
+
+## 2. Run Step 2 — Transfer Learning
+
+> **Prerequisites:** Step 1 complete. Transfer runs use the Step 1 default
+> Set 1 checkpoint as the source policy:
+> `logs/main_default/{ALG}_N{N}_env1_seed{SEED}/best_model/best_model.zip`.
+
+Submit two job arrays — one for CrossQ (GPU), one for all others (CPU):
+
+```bash
+sbatch slurm/step2_crossq_transfer.sh    # 180 jobs (1 alg × 9 target sets × 4 N × 5 seeds)
+sbatch slurm/step2_others_transfer.sh    # 900 jobs (5 algs × 9 target sets × 4 N × 5 seeds)
+```
+
+**Wait for all jobs to finish** before using the transfer checkpoints.
+
+**What this produces:**
+```
+logs/main_transfer/{ALG}_N{N}_env{SET}_seed{SEED}/
+    best_model/best_model.zip
+    eval_logs/evaluations.npz
+    episode_metrics.csv
+    *.csv  (SB3 training log)
+```
+
+Target sets are Sets 2–10. Set 1 is not fine-tuned because it is the source
+domain. Transfer evaluation later writes `results/results_transfer.csv` and
+records source pretraining steps, target fine-tuning steps, and total training
+steps in the raw evaluation CSV.
+
+---
+
+## 3. Run Step 3 — Optuna Hyperparameter Tuning
+
+Submit separate CPU and GPU tuning arrays:
+
+```bash
+sbatch slurm/step3_tune_cpu.sh           # 200 jobs (4 CPU algs × 50 trials)
+sbatch slurm/step3_tune_gpu.sh           # 100 jobs (2 GPU algs × 50 trials)
+```
+
+**What this produces:**
+```
+logs/best_hyperparams.json               ← consumed by Step 4
+logs/optuna_studies/{ALG}_journal.log    ← Optuna journal storage
+logs/step3_tune/                         ← tuning log root
+```
+
+---
+
+## 4. Run Step 4 — Tuned Hyperparameters
+
+```bash
+sbatch slurm/step4_crossq_tuned.sh       # 200 jobs
+sbatch slurm/step4_others_tuned.sh       # 1000 jobs
+```
+
+**What this produces:**
+```
+logs/main_tuned/{ALG}_N{N}_env{SET}_seed{SEED}/
+    best_model/best_model.zip
+    eval_logs/evaluations.npz
+    episode_metrics.csv
+```
+
+---
+
+## 5. Run Step 5 — Reward Ablation
+
+```bash
+sbatch slurm/step5_ablation_reward.sh    # 20 jobs (4 conditions × 5 seeds)
+```
+
+`no_eff` disables energy, speed, wasted-spray, empty-capacity spray, path, and time penalties.
+
+---
+
+## 6. Run Step 6 — Observation Ablation
+
+```bash
+sbatch slurm/step6_ablation_obs.sh       # 25 jobs (5 conditions × 5 seeds)
+```
+
+Observation dimensions are:
+`base = 5N+3M`, `full = 6N+3M+2`, `no_wind = 6N+3M`,
+`no_spray_hist = 5N+3M+2`, and `pos_only = 2N`.
+
+---
+
+## 7. Run Step 7 — Uncertainty Ablation
+
+```bash
+sbatch slurm/step7_ablation_uncertainty.sh  # 20 jobs (4 conditions × 5 seeds)
+```
+
+`full` uncertainty includes wind, wind-direction, actuation, spray,
+observation, and initial-position noise.
+
+---
+
+## 8. Run Step 8 — Domain Randomization
+
+```bash
+sbatch slurm/step8_dr.sh                 # 600 jobs (3 DR modes × 10 sets × 4 N × 5 seeds)
+```
+
+---
+
+## 9. Post-Training Evaluation (50 episodes per policy)
+
+The SB3 `EvalCallback` during training runs 20 episodes per checkpoint in the
+provided SLURM scripts. For the final tables, run `evaluate.py` for **50
+evaluation episodes per run** via the evaluation SLURM scripts.
+
+### 9-A. Main results (Tables 1 & 2 + transfer summary)
+
+The default and tuned HP runs cover the same full grid:
+**6 algs × 10 sets × 4 robot counts × 5 seeds = 1200 jobs each.**
+
+The transfer run evaluates target Sets 2–10 only:
+**6 algs × 9 target sets × 4 robot counts × 5 seeds = 1080 jobs.**
+
+```bash
+# Default HPs (Step 1 → Table 1)
+sbatch --array=0-1199 slurm/eval_main.sh default
+
+# Tuned HPs (Step 4 → Table 2)
+sbatch --array=0-1199 slurm/eval_main.sh tuned
+
+# Transfer learning (Step 2 → transfer summary/figures)
+sbatch --array=0-1079 slurm/eval_main.sh transfer
+```
+
+> **Tip:** Because locked CSV upserts are used, if individual jobs fail you can
+> simply re-submit the failed array indices.
+>
+> Tuned evaluations record the additional hyperparameter-search budget in the
+> raw CSVs and `main_tuned_summary.csv`.
+>
+> Transfer evaluations record both source pretraining steps and target
+> fine-tuning steps. They should not be interpreted as equal-compute
+> comparisons against scratch training.
+
+### 9-B. Ablation experiments (Tables 3, 4, 5)
+
+```bash
+sbatch --array=0-19  slurm/eval_ablations.sh ablation_reward
+sbatch --array=0-24  slurm/eval_ablations.sh ablation_obs
+# For uncertainty, cross-eval requires 4 train × 4 eval × 5 seeds = 80 jobs:
+sbatch --array=0-79  slurm/eval_ablations.sh ablation_uncertainty
+```
+
+### 9-C. Domain randomization (Table 7)
+
+For controlled DR policy comparison, `eval_ablations.sh` defaults to
+`EVAL_DR_MODE=none`. Set `EVAL_DR_MODE=wind` or `EVAL_DR_MODE=full` only if
+intentionally evaluating all policies under that common randomized test
+distribution.
+
+```bash
+sbatch --array=0-599 slurm/eval_ablations.sh dr
+```
+
+### 9-D. Wind sweep for Figure 4
+
+`eval_wind_sweep.sh` also defaults to `EVAL_DR_MODE=none`, while `ablation`
+still identifies which trained DR policy is loaded.
+
+```bash
+sbatch slurm/eval_wind_sweep.sh          # 100 jobs (2 DR × 10 bins × 5 seeds)
+```
+
+---
+
+## 10. Aggregate Results and Generate Table CSVs
+
+Once **all** evaluation jobs are complete:
+
+```bash
+python analyze_results.py --results_dir results
+```
+
+**What this produces in `results/`:**
+
+Aggregate CSVs preserve the reward/IQM summaries and include diagnostic
+episode metrics when the raw evaluation CSVs contain them.
+
+| File | Used for |
+|---|---|
+| `main_default_summary.csv` | Tab. 1 data |
+| `main_tuned_summary.csv`   | Tab. 2 data |
+| `main_transfer_summary.csv` | Transfer-learning data |
+| `ablation_reward_agg.csv`  | Tab. 3 data |
+| `ablation_obs_agg.csv`     | Tab. 4 data |
+| `ablation_uncertainty_agg.csv` | Tab. 5 data |
+| `dr_results_agg.csv`       | Tab. 7 data (also records the evaluation DR protocol) |
+| `*_latex_rows.txt`         | **Ready-to-paste LaTeX rows** |
+
+---
+
+## 11. Generate All Figures
+
+```bash
+python plot_figures.py \
+    --log_root    logs \
+    --results_dir results \
+    --figures_dir figures
+```
+
+**Figures produced:**
+
+| File | LaTeX label | Description |
+|---|---|---|
+| `figures/default_learning_curves.png` | `fig:default_hyp` | Learning curves (default HPs, all N) |
+| `figures/default_{N}_robots.png`      | (per-N version)   | Individual N panels |
+| `figures/random_learning_curves.png`  | `fig:random_hyp`  | Learning curves (tuned HPs) |
+| `figures/random_{N}_robots.png`       | (per-N version)   | |
+| `figures/transfer_learning_curves.png` | `fig:transfer_hyp` | Learning curves (transfer fine-tuning) |
+| `figures/transfer_{N}_robots.png`     | (per-N version)   | |
+| `figures/scalability.png`             | `fig:scalability` | IQM + ep-length vs N |
+| `figures/transfer_scalability.png`    | `fig:transfer_scalability` | Transfer IQM + ep-length vs N |
+| `figures/wind_sensitivity.png`        | `fig:wind_sensitivity` | IQM vs wind speed |
+| `figures/dr_curves.png`               | `fig:dr_curves`   | DR training curves |
+
+---
+
+## 12. Fill LaTeX Tables
+
+These steps assume `full_experiments.tex` is available in your paper or
+manuscript directory.
+
+### Table 1 & 2 (main results)
+
+1. Open `results/main_default_latex_rows.txt`
+2. Each line is a `Algorithm & N=2 & N=3 & N=4 & N=5 \\` row
+3. Replace the dummy rows in `full_experiments.tex` between `\midrule` and `\bottomrule` of `tab:default_hyp`
+4. Repeat with `main_tuned_latex_rows.txt` for `tab:random_hyp`
+5. Open `results/main_transfer_latex_rows.txt` for the transfer-learning rows if you include `tab:transfer_hyp`
+
+Example format of each cell:
+```
+$850.3 \pm 42.1\ (847.2)^\dagger$
+```
+
+### Table 3 (reward ablation)
+
+1. Open `results/ablation_reward_latex_rows.txt`
+2. Replace dummy rows in `tab:ablation_reward`
+
+### Table 4 (observation ablation)
+
+1. Open `results/ablation_obs_latex_rows.txt`
+2. Replace dummy rows in `tab:ablation_obs`
+
+### Table 5 (uncertainty ablation)
+
+1. Open `results/ablation_uncertainty_latex_rows.txt`
+2. Replace dummy rows in `tab:ablation_uncertainty`
+
+### Table 6 (hyperparameter sensitivity)
+
+This table (CV values) requires a dedicated sensitivity sweep. The values
+come from varying each hyperparameter over a 7-point grid. If you have the
+auxiliary `sensitivity_hp.py` script, run manually:
+
+```bash
+python sensitivity_hp.py --algorithm TRPO  --results_dir results
+python sensitivity_hp.py --algorithm CrossQ --results_dir results
+python sensitivity_hp.py --algorithm PPO   --results_dir results
+python sensitivity_hp.py --algorithm A2C   --results_dir results
+python sensitivity_hp.py --algorithm TQC   --results_dir results
+# ARS: only alpha, no gae
+python sensitivity_hp.py --algorithm ARS   --results_dir results
+```
+
+### Table 7 (DR results)
+
+1. Open `results/dr_results_latex_rows.txt`
+2. Replace dummy rows in `tab:dr_results`
+
+### Table 8 (observation gap, sim-to-real)
+
+This table comes from **manual CoppeliaSim inference experiments** (as noted
+in the tex comment). Run the trained CrossQ+full-DR policy inside CoppeliaSim
+with:
+- GPS noise σ = 0.05 m
+- Wind estimate latency = 1 step
+- 5% packet loss
+
+Record IQM from 50 episodes per condition and fill manually.
+
+### Table 9 (scalability / compute)
+
+If you have the auxiliary `measure_compute.py` script, run:
+```bash
+python measure_compute.py --log_root logs --results_dir results
+```
+
+This measures wall-clock time per training run from log timestamps, and
+inference latency from a timed loop.
+
+---
+
+## 13. Update Figure Captions
+
+After generating figures, update the captions and `\includegraphics` paths in
+`full_experiments.tex` to point to the correct figure files, e.g.:
+
+```latex
+\includegraphics[width=\linewidth]{figures/default_learning_curves.png}
+```
+
+---
+
+## Summary of Job Counts
+
+| Step | Script | Jobs |
+|---|---|---|
+| 1a | slurm/step1_crossq_default.sh | 200 |
+| 1b | slurm/step1_others_default.sh | 1000 |
+| 2a | slurm/step2_crossq_transfer.sh | 180 |
+| 2b | slurm/step2_others_transfer.sh | 900 |
+| 3a | slurm/step3_tune_cpu.sh      | 200  |
+| 3b | slurm/step3_tune_gpu.sh      | 100  |
+| 4a | slurm/step4_crossq_tuned.sh  | 200  |
+| 4b | slurm/step4_others_tuned.sh  | 1000 |
+| 5  | slurm/step5_ablation_reward.sh| 20   |
+| 6  | slurm/step6_ablation_obs.sh   | 25   |
+| 7  | slurm/step7_ablation_uncertainty.sh | 20 |
+| 8  | slurm/step8_dr.sh             | 600  |
+| 9a | slurm/eval_main.sh (default)  | 1200 |
+| 9b | slurm/eval_main.sh (tuned)    | 1200 |
+| 9c | slurm/eval_main.sh (transfer) | 1080 |
+| 9d | slurm/eval_ablations.sh (reward) | 20 |
+| 9e | slurm/eval_ablations.sh (obs) | 25   |
+| 9f | slurm/eval_ablations.sh (uncertainty) | 80 |
+| 9g | slurm/eval_ablations.sh (dr)  | 600  |
+| 9h | slurm/eval_wind_sweep.sh      | 100  |
+| **Total** | | **8750** |
+
+---
+
+## Dependency Graph (submit in order)
+
+```
+Step 1 (default train)
+    ├─► Step 2 (transfer train from Set 1 default checkpoints)
+    │       └─► slurm/eval_main.sh (transfer)
+    │               └─► analyze_results.py → transfer summary
+    │                   plot_figures.py → transfer figures
+    └─► slurm/eval_main.sh (default)
+            └─► analyze_results.py → Tab. 1
+                plot_figures.py → Fig. 1
+
+Step 3 (tune CPU/GPU) ─► Step 4 (tuned train)
+                           └─► slurm/eval_main.sh (tuned)
+                                   └─► analyze_results.py → Tab. 2
+                                       plot_figures.py → Fig. 2, 3
+
+Step 5 ─► slurm/eval_ablations.sh (reward) ─► analyze_results.py → Tab. 3
+Step 6 ─► slurm/eval_ablations.sh (obs)    ─► analyze_results.py → Tab. 4
+Step 7 ─► slurm/eval_ablations.sh (uncertainty) ─► analyze_results.py → Tab. 5
+
+Step 8 ─► slurm/eval_ablations.sh (dr)      ─► analyze_results.py → Tab. 7
+       └─► slurm/eval_wind_sweep.sh         ─► plot_figures.py → Fig. 4
+                                             ─► plot_figures.py → Fig. 5
+```
