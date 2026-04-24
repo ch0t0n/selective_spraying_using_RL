@@ -5,12 +5,7 @@
 #SBATCH --cpus-per-task=2        # Good practice to request a few CPUs
 #SBATCH --mem=8G                 # Request 8GB of RAM
 #SBATCH --time=00:10:00          # 10 minutes is plenty for this check
-#SBATCH --output=logs/slurm_outputs/gpu_check/%x_%j.out
-#SBATCH --error=logs/slurm_errors/gpu_check/%x_%j.err
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
-cd "$PROJECT_ROOT"
+#SBATCH --output=/homes/choton/rl4pag/neurips_experiments/logs/gpu_check_%j.log # Saves output to a file with the Job ID
 
 # Exit immediately if a command exits with a non-zero status
 set -e

@@ -1,133 +1,146 @@
 #!/bin/bash
 # ============================================================
-# eval_ablations.sh — evaluate.py for ablation + DR experiments.
+# eval_ablations.sh — SAFE version (per-job CSVs, no conflicts)
 #
-# Submit after steps 5, 6, 7, 8 are complete.
-# Usage:
-#   sbatch --array=0-19  eval_ablations.sh ablation_reward
-#   sbatch --array=0-24  eval_ablations.sh ablation_obs
-#   sbatch --array=0-79  eval_ablations.sh ablation_uncertainty
+# Covers experiments that require separate evaluation passes:
+#   ablation_uncertainty  — cross-evaluation matrix (train × eval noise)
+#   dr                    — in-distribution and OOD wind evaluation
+#
+# Note: ablation_reward and ablation_obs are no longer evaluated
+# here; those results are read directly from the training
+# evaluations.npz files by analyze_results.py.
+#
+# Changes vs previous version
+# ----------------------------
+#   REQ (2) + BUG FIX: ablation_uncertainty block now iterates over
+#     all 10 env sets (was hardcoded to --set 1).  Index math extended
+#     with a set_idx dimension.  Array size updated from 0-79 to 0-799
+#     (4 train × 4 eval × 10 sets × 5 seeds = 800 jobs).
+#   REQ (3) / evaluate.py: evaluate.py itself skips the run when the
+#     per-job output CSV already contains a matching row, so re-submitting
+#     failed array indices is safe with no double-appending.
+#
+# Submit:
+#   mkdir -p logs/slurm_outputs/eval_ablations  # run once before sbatch
+#   sbatch --array=0-799 eval_ablations.sh ablation_uncertainty
 #   sbatch --array=0-599 eval_ablations.sh dr
 # ============================================================
 
 #SBATCH --job-name=eval_ablation
-#SBATCH --output=logs/slurm_outputs/eval_ablation/%x_%A_%a.out
-#SBATCH --error=logs/slurm_errors/eval_ablation/%x_%A_%a.err
+#SBATCH --output=logs/slurm_outputs/eval_ablations/%x_%j.out
+#SBATCH --error=logs/slurm_outputs/eval_ablations/%x_%j.err
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem=4G
-#SBATCH --time=2:00:00
+#SBATCH --time=4:00:00
 #SBATCH --export=NONE
 
-set -euo pipefail
+EXPERIMENT=${1:-ablation_uncertainty}
 
-EXPERIMENT=${1:-ablation_reward}
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [ -f "$SCRIPT_DIR/train.py" ] || [ -f "$SCRIPT_DIR/tune.py" ] || [ -f "$SCRIPT_DIR/evaluate.py" ]; then
-    DEFAULT_PROJECT_ROOT="$SCRIPT_DIR"
-else
-    DEFAULT_PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-fi
-PROJECT_ROOT="${PROJECT_ROOT:-$DEFAULT_PROJECT_ROOT}"
-cd "$PROJECT_ROOT"
-LOG_ROOT="${LOG_ROOT:-$PROJECT_ROOT/logs}"
-RESULTS_DIR="${RESULTS_DIR:-$PROJECT_ROOT/results}"
+# Per-experiment output root
+OUT_ROOT="logs/results/tmp/${EXPERIMENT}"
+mkdir -p "$OUT_ROOT"
+
 seeds=(0 42 123 2024 9999)
 num_seeds=${#seeds[@]}
 index=$SLURM_ARRAY_TASK_ID
 
-# ── Ablation: reward ──────────────────────────────────────────
-if [ "$EXPERIMENT" == "ablation_reward" ]; then
-    conditions=("full" "no_col" "no_cov" "no_eff")
-    seed_idx=$(( index % num_seeds ))
-    cond_idx=$(( index / num_seeds ))
-    condition=${conditions[$cond_idx]}
-    seed=${seeds[$seed_idx]}
-    echo "eval | ablation_reward | condition=$condition | seed=$seed"
-    conda run --no-capture-output -n robot_env python3 evaluate.py \
-        --algorithm  CrossQ --set 1 --num_robots 3 --seed $seed \
-        --experiment ablation_reward --ablation $condition \
-        --eval_reward_ablation full \
-        --log_root "$LOG_ROOT" \
-        --output_csv "$RESULTS_DIR/ablation_reward.csv" --n_eval_eps 50 \
-        --device cpu
+# ============================================================
+# ── Ablation: uncertainty ────────────────────────────────────
+#
+# REQ (2) + BUG FIX: now iterates over all 10 env sets.
+#
+# Grid: 4 train_modes × 4 eval_modes × 10 sets × 5 seeds = 800 jobs
+# Submit: sbatch --array=0-799 eval_ablations.sh ablation_uncertainty
+#
+# Index layout (innermost → outermost):
+#   seed_idx   = index % 5
+#   set_idx    = (index / 5)  % 10
+#   train_idx  = (index / 50) % 4
+#   eval_idx   = index / 200
+# ============================================================
+if [ "$EXPERIMENT" == "ablation_uncertainty" ]; then
 
-# ── Ablation: observation ─────────────────────────────────────
-elif [ "$EXPERIMENT" == "ablation_obs" ]; then
-    obs_modes=("base" "full" "no_wind" "no_spray_hist" "pos_only")
-    seed_idx=$(( index % num_seeds ))
-    cond_idx=$(( index / num_seeds ))
-    obs_mode=${obs_modes[$cond_idx]}
-    seed=${seeds[$seed_idx]}
-    echo "eval | ablation_obs | obs_mode=$obs_mode | seed=$seed"
-    conda run --no-capture-output -n robot_env python3 evaluate.py \
-        --algorithm  CrossQ --set 1 --num_robots 3 --seed $seed \
-        --experiment ablation_obs --ablation $obs_mode \
-        --log_root "$LOG_ROOT" \
-        --output_csv "$RESULTS_DIR/ablation_obs.csv" --n_eval_eps 50 \
-        --device cpu
-
-# ── Ablation: uncertainty (cross-evaluation) ──────────────────
-elif [ "$EXPERIMENT" == "ablation_uncertainty" ]; then
-    # Train condition × Eval condition pairs
-    # Index encodes: eval_cond_idx*20 + seed_idx*4 + train_cond_idx
     train_modes=("full" "wind_only" "act_only" "deterministic")
     eval_modes=("full" "wind_only" "act_only" "deterministic")
+    sets=(1 2 3 4 5 6 7 8 9 10)
+
+    num_sets=${#sets[@]}
+
     seed_idx=$(( index % num_seeds ))
-    train_idx=$(( (index / num_seeds) % 4 ))
-    eval_idx=$(( index / (num_seeds * 4) ))
+    set_idx=$(( (index / num_seeds) % num_sets ))
+    train_idx=$(( (index / (num_seeds * num_sets)) % 4 ))
+    eval_idx=$(( index / (num_seeds * num_sets * 4) ))
+
     train_mode=${train_modes[$train_idx]}
     eval_mode=${eval_modes[$eval_idx]}
     seed=${seeds[$seed_idx]}
-    echo "eval | ablation_uncertainty | train=$train_mode | eval=$eval_mode | seed=$seed"
-    conda run --no-capture-output -n robot_env python3 evaluate.py \
-        --algorithm  CrossQ --set 1 --num_robots 3 --seed $seed \
+    set=${sets[$set_idx]}
+
+    OUT_DIR="${OUT_ROOT}/train_${train_mode}_eval_${eval_mode}/set${set}"
+    mkdir -p "$OUT_DIR"
+    OUT_CSV="${OUT_DIR}/result_${index}.csv"
+
+    echo "eval | ablation_uncertainty | train=$train_mode | eval=$eval_mode | set=$set | seed=$seed"
+    echo "Output: $OUT_CSV"
+
+    /homes/choton/miniconda3/envs/robot_env/bin/python evaluate.py \
+        --algorithm  CrossQ --set $set --num_robots 3 --seed $seed \
         --experiment ablation_uncertainty --ablation $train_mode \
         --eval_uncertainty_mode $eval_mode \
-        --log_root "$LOG_ROOT" \
-        --output_csv "$RESULTS_DIR/ablation_uncertainty.csv" --n_eval_eps 50 \
-        --device cpu
+        --output_csv $OUT_CSV --n_eval_eps 50
 
-# ── Domain randomization ──────────────────────────────────────
+# ============================================================
+# ── Domain randomization ─────────────────────────────────────
+#
+# Grid: 3 dr_modes × 10 sets × 4 robots × 5 seeds = 600 jobs
+# Submit: sbatch --array=0-599 eval_ablations.sh dr
+# ============================================================
 elif [ "$EXPERIMENT" == "dr" ]; then
+
     dr_modes=("none" "wind" "full")
     sets=(1 2 3 4 5 6 7 8 9 10)
     robots=(2 3 4 5)
-    num_dr=${#dr_modes[@]}
+
     num_sets=${#sets[@]}
     num_robots=${#robots[@]}
-    eval_dr_mode="${EVAL_DR_MODE:-none}"
+
     seed_idx=$(( index % num_seeds ))
     robot_idx=$(( (index / num_seeds) % num_robots ))
     set_idx=$(( (index / (num_seeds * num_robots)) % num_sets ))
     dr_idx=$(( index / (num_seeds * num_robots * num_sets) ))
+
     dr_mode=${dr_modes[$dr_idx]}
     set=${sets[$set_idx]}
     num_robots_value=${robots[$robot_idx]}
     seed=${seeds[$seed_idx]}
-    echo "eval | dr | dr_mode=$dr_mode | eval_dr=$eval_dr_mode | set=$set | robots=$num_robots_value | seed=$seed"
 
-    # DR training samples wind in [0.0, 1.0] m/s, so in-distribution covers that full range.
-    # OOD starts at 1.0 m/s to avoid mixing seen and unseen wind speeds.
-    # In-distribution evaluation (wind ∈ [0.0, 1.0] m/s)
-    conda run --no-capture-output -n robot_env python3 evaluate.py \
+    OUT_DIR="${OUT_ROOT}/${dr_mode}/set${set}_N${num_robots_value}"
+    mkdir -p "$OUT_DIR"
+
+    echo "eval | dr | mode=$dr_mode | set=$set | robots=$num_robots_value | seed=$seed"
+
+    # In-distribution
+    OUT_CSV_IN="${OUT_DIR}/inDist_${index}.csv"
+    /homes/choton/miniconda3/envs/robot_env/bin/python evaluate.py \
         --algorithm  CrossQ --set $set --num_robots $num_robots_value --seed $seed \
         --experiment dr --ablation $dr_mode \
-        --eval_dr_mode $eval_dr_mode \
-        --eval_wind_min 0.0 --eval_wind_max 1.0 \
-        --freeze_eval_wind_noise \
-        --log_root "$LOG_ROOT" \
-        --output_csv "$RESULTS_DIR/dr_inDist.csv" --n_eval_eps 50 \
-        --device cpu
+        --eval_wind_min 0.0 --eval_wind_max 0.5 \
+        --output_csv $OUT_CSV_IN --n_eval_eps 50
 
-    # OOD evaluation (wind ∈ [1.0, 2.0] m/s)
-    conda run --no-capture-output -n robot_env python3 evaluate.py \
+    # OOD
+    OUT_CSV_OOD="${OUT_DIR}/OOD_${index}.csv"
+    /homes/choton/miniconda3/envs/robot_env/bin/python evaluate.py \
         --algorithm  CrossQ --set $set --num_robots $num_robots_value --seed $seed \
         --experiment dr --ablation $dr_mode \
-        --eval_dr_mode $eval_dr_mode \
-        --eval_wind_min 1.0 --eval_wind_max 2.0 \
-        --freeze_eval_wind_noise \
-        --log_root "$LOG_ROOT" \
-        --output_csv "$RESULTS_DIR/dr_OOD.csv" --n_eval_eps 50 \
-        --device cpu
+        --eval_wind_min 0.5 --eval_wind_max 2.0 \
+        --output_csv $OUT_CSV_OOD --n_eval_eps 50
+
+else
+    echo "ERROR: unknown experiment '${EXPERIMENT}'."
+    echo "Usage: sbatch --array=0-799 eval_ablations.sh ablation_uncertainty"
+    echo "       sbatch --array=0-599 eval_ablations.sh dr"
+    exit 1
 fi
+
+wait

@@ -2,14 +2,13 @@
 """
 train.py — unified training script for all experiments.
 
-Handles the train.py-backed experiment steps via command-line arguments:
+Handles all 7 experiment steps via command-line arguments:
   Step 1  --experiment main     (default HPs)
-  Step 2  --experiment main     --transfer_from <path>      (transfer learning)
-  Step 4  --experiment main     --hyperparams_json <path>   (tuned HPs)
-  Step 5  --experiment ablation_reward  --ablation {full|no_col|no_cov|no_eff}
-  Step 6  --experiment ablation_obs     --ablation {base|full|no_wind|no_spray_hist|pos_only}
-  Step 7  --experiment ablation_uncertainty  --ablation {full|wind_only|act_only|deterministic}
-  Step 8  --experiment dr       --ablation {none|wind|full}
+  Step 3  --experiment main     --hyperparams_json <path>   (tuned HPs)
+  Step 4  --experiment ablation_reward  --ablation {full|no_term|no_spr|no_path}
+  Step 5  --experiment ablation_obs     --ablation {full|no_pos|no_inf_hist|pos_only}
+  Step 6  --experiment ablation_uncertainty  --ablation {full|wind_only|act_only|deterministic}
+  Step 7  --experiment dr       --ablation {none|wind|full}
 
 Usage example (equivalent to old train_default.py call):
   python train.py --algorithm CrossQ --set 1 --num_robots 3 --seed 42
@@ -19,11 +18,9 @@ Author: Jahid Chowdhury Choton (email: choton@ksu.edu)
 """
 
 import os
-import sys
 import json
 import argparse
 import numpy as np
-from datetime import datetime
 
 import gymnasium as gym
 from stable_baselines3 import A2C, PPO
@@ -34,7 +31,7 @@ from stable_baselines3.common.logger import configure
 from sb3_contrib import TRPO, TQC, CrossQ, ARS
 
 from src.env import MultiRobotEnv
-from src.utils import load_experiment_dict_json, set_global_seeds
+from src.utils import load_experiment_dict_json
 
 # ================================================================
 # Constants
@@ -49,7 +46,7 @@ ALGORITHMS = {
     "TQC":    (TQC,    "MlpPolicy"),
 }
 
-# Experiment → env constructor kwarg name + valid choices
+# Experiment → env constructor kwarg name
 EXPERIMENT_MAP = {
     "main":                  None,               # no ablation kwarg
     "ablation_reward":       "reward_ablation",
@@ -58,17 +55,26 @@ EXPERIMENT_MAP = {
     "dr":                    "dr_mode",
 }
 
+# Valid ablation choices per experiment — must match env.py assertions exactly
+VALID_ABLATIONS = {
+    "main":                  {None},
+    "ablation_reward":       {"full", "no_term", "no_spr", "no_path"},
+    "ablation_obs":          {"full", "no_pos", "no_inf_hist", "pos_only"},
+    "ablation_uncertainty":  {"full", "wind_only", "act_only", "deterministic"},
+    "dr":                    {"none", "wind", "full"},
+}
+
 # Default ablation value per experiment type (used when --ablation not given)
+# BUG FIX: was "base" for ablation_obs — "base" is not a valid obs_mode in env.py
 EXPERIMENT_DEFAULTS = {
     "main":                  None,
     "ablation_reward":       "full",
-    "ablation_obs":          "base",
+    "ablation_obs":          "full",        # fixed: was "base"
     "ablation_uncertainty":  "full",
     "dr":                    "none",
 }
 
-PROJECT_ROOT = os.environ.get("PROJECT_ROOT", os.path.dirname(os.path.abspath(__file__)))
-JSON_PATH = os.path.join(PROJECT_ROOT, 'exp_sets', 'stochastic_envs_v2.json')
+JSON_PATH = os.path.join('exp_sets', 'stochastic_envs_v2.json')
 
 # ================================================================
 # Argument parsing
@@ -92,7 +98,7 @@ def parse_args():
                    help="Number of parallel training envs")
     p.add_argument("--max_steps",   type=int,   default=1000,
                    help="Maximum steps per episode")
-    p.add_argument("--n_eval_eps",  type=int,   default=20,
+    p.add_argument("--n_eval_eps",  type=int,   default=5,
                    help="Episodes per EvalCallback evaluation")
 
     # ── new experiment-control arguments ──
@@ -102,16 +108,26 @@ def parse_args():
     p.add_argument("--ablation",    type=str,   default=None,
                    help="Ablation condition within the selected experiment")
     p.add_argument("--hyperparams_json", type=str, default=None,
-                   help="Path to best_hyperparams.json (Step 4 tuned HPs). "
+                   help="Path to best_hyperparams.json (Step 3 tuned HPs). "
                         "If omitted, SB3 defaults are used.")
-    p.add_argument("--transfer_from", type=str, default=None,
-                   help="Path to source best_model.zip for Step 2 transfer. "
-                        "If provided, train.py loads it and continues training.")
     p.add_argument("--log_root",    type=str,
-                   default=os.path.join(PROJECT_ROOT, 'logs'),
+                   default=os.path.join('logs'),
                    help="Root directory for all logs and saved models")
 
-    return p.parse_args()
+    args = p.parse_args()
+
+    # ── Validate --ablation against the chosen experiment ────────────
+    # Fail fast here with a clear message rather than inside the env constructor
+    effective_ablation = args.ablation or EXPERIMENT_DEFAULTS[args.experiment]
+    valid = VALID_ABLATIONS[args.experiment]
+    if effective_ablation not in valid:
+        p.error(
+            f"--ablation '{effective_ablation}' is not valid for "
+            f"--experiment '{args.experiment}'. "
+            f"Choose from: {sorted(v for v in valid if v is not None)}"
+        )
+
+    return args
 
 
 # ================================================================
@@ -119,31 +135,12 @@ def parse_args():
 # ================================================================
 
 def load_hyperparams(json_path: str, algorithm: str) -> dict:
-    """Load tuned hyperparameters for one algorithm from JSON (Step 3 output)."""
-    if json_path is None:
+    """Load tuned hyperparameters for one algorithm from JSON (Step 2 output)."""
+    if json_path is None or not os.path.exists(json_path):
         return {}
-    if not os.path.exists(json_path):
-        raise FileNotFoundError(f"Hyperparameter JSON not found: {json_path}")
-
     with open(json_path) as f:
         data = json.load(f)
-    # if hyperparameters are missing, do NOT silently use defaults
-    if algorithm not in data:
-        raise KeyError(
-            f"Algorithm '{algorithm}' not found in hyperparameter JSON: {json_path}"
-        )
-    if not isinstance(data[algorithm], dict) or "params" not in data[algorithm]:
-        raise KeyError(
-            f"Missing 'params' for algorithm '{algorithm}' in: {json_path}"
-        )
-    ctx = data[algorithm].get("context")
-    if ctx:
-        print(f"  HP tuning context for {algorithm}: {ctx}")
-    hp = data[algorithm]["params"]
-    if not isinstance(hp, dict):
-        raise TypeError(
-            f"Expected dict for '{algorithm}' params in {json_path}, got {type(hp).__name__}"
-        )
+    hp = data.get(algorithm, {}).get("params", {})
     print(f"  Loaded tuned HPs for {algorithm}: {hp}")
     return hp
 
@@ -183,11 +180,8 @@ def build_log_dir(args) -> str:
     directories, breaking the glob in evaluate.py.
     """
     if args.experiment == "main":
-        if args.transfer_from:
-            version = "main_transfer"
-        else:
-            hp_tag = "tuned" if args.hyperparams_json else "default"
-            version = f"main_{hp_tag}"
+        hp_tag = "tuned" if args.hyperparams_json else "default"
+        version = f"main_{hp_tag}"
     elif args.experiment == "dr":
         version = f"dr_{args.ablation or 'none'}"
     else:
@@ -205,15 +199,7 @@ def build_log_dir(args) -> str:
 # ================================================================
 
 def train(args):
-    set_global_seeds(args.seed)
-
-    if args.transfer_from is not None:
-        if args.experiment != "main":
-            raise ValueError("--transfer_from is only supported for --experiment main")
-        if args.hyperparams_json is not None:
-            raise ValueError("--transfer_from and --hyperparams_json should not be used together")
-        if not os.path.exists(args.transfer_from):
-            raise FileNotFoundError(f"Transfer checkpoint not found: {args.transfer_from}")
+    np.random.seed(args.seed)
 
     # ── Load environment config ──────────────────────────────────
     json_dict  = load_experiment_dict_json(JSON_PATH)
@@ -253,8 +239,6 @@ def train(args):
     print(f"  Seed      : {args.seed}")
     print(f"  Steps     : {args.steps:,}")
     print(f"  Log dir   : {log_dir}")
-    if args.transfer_from:
-        print(f"  Transfer  : {args.transfer_from}")
     print("=" * 60)
 
     # ── Callbacks ────────────────────────────────────────────────
@@ -278,26 +262,18 @@ def train(args):
 
     # ── Model ────────────────────────────────────────────────────
     AlgClass, policy = ALGORITHMS[args.algorithm]
-    if args.transfer_from:
-        print(f"  Loading transfer checkpoint: {args.transfer_from}")
-        model = AlgClass.load(args.transfer_from, env=vec_env, device=args.device)
-    else:
-        model = AlgClass(
-            policy, vec_env,
-            verbose=args.verbose,
-            device=args.device,
-            seed=args.seed,
-            **hp,
-        )
+    model = AlgClass(
+        policy, vec_env,
+        verbose=args.verbose,
+        device=args.device,
+        seed=args.seed,
+        **hp,
+    )
     model.set_logger(logger)
 
     # ── Training ─────────────────────────────────────────────────
     print(f"\nTraining {args.algorithm} ...")
-    model.learn(
-        total_timesteps=args.steps,
-        callback=callback,
-        reset_num_timesteps=(args.transfer_from is None),
-    )
+    model.learn(total_timesteps=args.steps, callback=callback)
 
     # ── Save final model ─────────────────────────────────────────
     save_path = os.path.join(

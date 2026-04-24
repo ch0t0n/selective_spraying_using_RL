@@ -3,34 +3,25 @@
 # eval_wind_sweep.sh — Wind sensitivity sweep for Figure 4.
 #
 # Evaluates CrossQ under 10 wind-speed bands for both standard
-# and DR-trained policies.  Run AFTER step8_dr.sh completes.
+# and DR-trained policies.  Run AFTER step7_dr.sh completes.
 #
 # Grid: 2 dr_modes × 10 wind bins × 5 seeds = 100 jobs
+#
+# Pre-submission (run once from the login node):
+#   mkdir -p logs/slurm_outputs/eval_wind_sweep results
 # ============================================================
 
 #SBATCH --array=0-99
 #SBATCH --job-name=eval_wind_sweep
-#SBATCH --output=logs/slurm_outputs/eval_wind_sweep/%x_%A_%a.out
-#SBATCH --error=logs/slurm_errors/eval_wind_sweep/%x_%A_%a.err
+#SBATCH --output=logs/slurm_outputs/eval_wind_sweep/%x_%j.out
+#SBATCH --error=logs/slurm_outputs/eval_wind_sweep/%x_%j.err
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem=4G
 #SBATCH --time=2:00:00
+#SBATCH --partition=ksu-gen-gpu.q
+#SBATCH --gres=gpu:1
 #SBATCH --export=NONE
-
-set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [ -f "$SCRIPT_DIR/train.py" ] || [ -f "$SCRIPT_DIR/tune.py" ] || [ -f "$SCRIPT_DIR/evaluate.py" ]; then
-    DEFAULT_PROJECT_ROOT="$SCRIPT_DIR"
-else
-    DEFAULT_PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-fi
-PROJECT_ROOT="${PROJECT_ROOT:-$DEFAULT_PROJECT_ROOT}"
-cd "$PROJECT_ROOT"
-LOG_ROOT="${LOG_ROOT:-$PROJECT_ROOT/logs}"
-RESULTS_DIR="${RESULTS_DIR:-$PROJECT_ROOT/results}"
-eval_dr_mode="${EVAL_DR_MODE:-none}"
 
 seeds=(0 42 123 2024 9999)
 dr_modes=("none" "full")
@@ -52,22 +43,21 @@ dr_mode=${dr_modes[$dr_idx]}
 wind_min=${wind_mins[$bin_idx]}
 wind_max=${wind_maxs[$bin_idx]}
 
-OUT_CSV="$RESULTS_DIR/wind_sweep.csv"
+OUT_CSV="results/wind_sweep.csv"
 
-echo "wind_sweep | dr_mode=$dr_mode | eval_dr=$eval_dr_mode | wind=[$wind_min,$wind_max] | seed=$seed"
+echo "wind_sweep | dr_mode=$dr_mode | wind=[$wind_min,$wind_max] | seed=$seed"
 
-conda run --no-capture-output -n robot_env python3 evaluate.py \
+/homes/choton/miniconda3/envs/robot_env/bin/python evaluate.py \
     --algorithm      CrossQ \
     --set            1 \
     --num_robots     3 \
     --seed           $seed \
     --experiment     dr \
     --ablation       $dr_mode \
-    --eval_dr_mode   $eval_dr_mode \
     --eval_wind_min  $wind_min \
     --eval_wind_max  $wind_max \
-    --freeze_eval_wind_noise \
-    --log_root       "$LOG_ROOT" \
-    --output_csv     "$OUT_CSV" \
+    --output_csv     $OUT_CSV \
     --n_eval_eps     50 \
-    --device         cpu
+    --device         cuda
+
+wait

@@ -17,7 +17,10 @@ squeue -u $USER
 sacct -j job_number -l
 
 # To print failed jobs in last 1 day
-sacct --starttime now-1day --user=$USER --state=FAILED
+sacct -X --starttime now-1day --user=$USER --state=FAILED
+
+# To print all jobs in last 6 hours
+sacct -X --starttime now-6hours --user=$USER
 
 # To check all available GPU types
 sinfo -o "%P %G %N"
