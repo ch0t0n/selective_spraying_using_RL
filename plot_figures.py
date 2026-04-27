@@ -423,7 +423,7 @@ def plot_combined_learning_curves(log_root: str, figures_dir: str):
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--log_root",     type=str, default="logs")
-    p.add_argument("--results_dir",  type=str, default="results")
+    p.add_argument("--results_dir",  type=str, default=r"logs/results")
     p.add_argument("--figures_dir",  type=str, default="figures")
     p.add_argument("--skip_curves",  action="store_true",
                    help="Skip learning-curve plots (slow if many log files)")

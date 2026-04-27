@@ -43,7 +43,7 @@ dr_mode=${dr_modes[$dr_idx]}
 wind_min=${wind_mins[$bin_idx]}
 wind_max=${wind_maxs[$bin_idx]}
 
-OUT_CSV="results/wind_sweep.csv"
+OUT_CSV="logs/results/wind_sweep.csv"
 
 echo "wind_sweep | dr_mode=$dr_mode | wind=[$wind_min,$wind_max] | seed=$seed"
 

@@ -369,9 +369,11 @@ class MultiRobotEnv(gym.Env):
                 reward    += 0.5 * np.sum(np.exp(-nearest))            
             reward -= 0.5 * remaining
 
+        term_cond = ""               # Terminal conditions for the reward ablation
         if remaining <= 0.01:
             if self.reward_ablation != "no_term":
                 reward += 500.0      # Large positive reward for successfull spraying
+            term_cond = "sprayed"   
             terminated = True        # always terminate on succession (completion)
 
         # ── R_col: collision penalty ──────────────────────────────────
@@ -379,17 +381,21 @@ class MultiRobotEnv(gym.Env):
             if compute_min_dist(self.robot_positions) < self.robot_size:    # Robots too close
                 if self.reward_ablation != "no_term":
                     reward -= 1000.0                                        # Large negative reward for collision
+                term_cond = "collision"
                 terminated = True   # always terminate on collision (safety)
 
         # ── Build observation & info ──────────────────────────────────
         obs, info = self._get_obs()
+        truncated = self.step_count >= self.max_steps       # Episode ends if max steps reached
+        if truncated:
+            term_cond = "max_steps"
         info.update({
             "total_sprayed": float(total_sprayed),          # Total infection removed this step
             "remaining_infection": float(remaining),        # Remaining infected amount
             "episode_length": self.step_count,              # Current timestep
-            "path_length": float(self.total_path_length)    # Total distance traveled
+            "path_length": float(self.total_path_length),   # Total distance traveled
+            "term_cond": term_cond
         })
-        truncated = self.step_count >= self.max_steps       # Episode ends if max steps reached
 
         return obs, reward, terminated, truncated, info
 

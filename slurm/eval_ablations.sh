@@ -3,15 +3,23 @@
 # eval_ablations.sh — SAFE version (per-job CSVs, no conflicts)
 #
 # Covers experiments that require separate evaluation passes:
+#   ablation_reward       — 50-ep eval for terminal-condition tracking
 #   ablation_uncertainty  — cross-evaluation matrix (train × eval noise)
 #   dr                    — in-distribution and OOD wind evaluation
 #
-# Note: ablation_reward and ablation_obs are no longer evaluated
-# here; those results are read directly from the training
-# evaluations.npz files by analyze_results.py.
+# Note: ablation_obs results are still read directly from training
+# evaluations.npz files by analyze_results.py; no separate eval
+# pass is needed for that experiment.
 #
 # Changes vs previous version
 # ----------------------------
+#   NEW: ablation_reward block added.  evaluate.py now supports
+#     --experiment ablation_reward and writes sprayed_pct,
+#     collision_pct, and max_steps_pct columns to the CSV.
+#     analyze_results.py prefers this CSV (results/ablation_reward.csv)
+#     over the training NPZ fallback to report dominant terminal
+#     condition in tab:ablation_reward.
+#     Grid: 4 conditions × 10 sets × 5 seeds = 200 jobs.
 #   REQ (2) + BUG FIX: ablation_uncertainty block now iterates over
 #     all 10 env sets (was hardcoded to --set 1).  Index math extended
 #     with a set_idx dimension.  Array size updated from 0-79 to 0-799
@@ -21,11 +29,11 @@
 #     failed array indices is safe with no double-appending.
 #
 # Submit:
-#   mkdir -p logs/slurm_outputs/eval_ablations  # run once before sbatch
+#   sbatch --array=0-199 eval_ablations.sh ablation_reward
 #   sbatch --array=0-799 eval_ablations.sh ablation_uncertainty
 #   sbatch --array=0-599 eval_ablations.sh dr
 # ============================================================
-
+ 
 #SBATCH --job-name=eval_ablation
 #SBATCH --output=logs/slurm_outputs/eval_ablations/%x_%j.out
 #SBATCH --error=logs/slurm_outputs/eval_ablations/%x_%j.err
@@ -45,6 +53,33 @@ seeds=(0 42 123 2024 9999)
 num_seeds=${#seeds[@]}
 index=$SLURM_ARRAY_TASK_ID
 
+if [ "$EXPERIMENT" == "ablation_reward" ]; then
+    conditions=("full" "no_term" "no_spr" "no_path")
+    sets=(1 2 3 4 5 6 7 8 9 10)
+
+    num_conditions=${#conditions[@]}
+    num_sets=${#sets[@]}
+
+    seed_idx=$(( index % num_seeds ))
+    set_idx=$(( (index / num_seeds) % num_sets ))
+    cond_idx=$(( index / (num_seeds * num_sets) ))
+
+    condition=${conditions[$cond_idx]}
+    set=${sets[$set_idx]}
+    seed=${seeds[$seed_idx]}
+
+    OUT_DIR="${OUT_ROOT}/${condition}/set${set}"
+    mkdir -p "$OUT_DIR"
+    OUT_CSV="${OUT_DIR}/result_${index}.csv"
+
+    echo "eval | ablation_reward | condition=$condition | set=$set | seed=$seed"
+    echo "Output: $OUT_CSV"
+
+    /homes/choton/miniconda3/envs/robot_env/bin/python evaluate.py \
+        --algorithm  CrossQ --set $set --num_robots 3 --seed $seed \
+        --experiment ablation_reward --ablation $condition \
+        --output_csv $OUT_CSV --n_eval_eps 50
+
 # ============================================================
 # ── Ablation: uncertainty ────────────────────────────────────
 #
@@ -59,8 +94,7 @@ index=$SLURM_ARRAY_TASK_ID
 #   train_idx  = (index / 50) % 4
 #   eval_idx   = index / 200
 # ============================================================
-if [ "$EXPERIMENT" == "ablation_uncertainty" ]; then
-
+elif [ "$EXPERIMENT" == "ablation_uncertainty" ]; then
     train_modes=("full" "wind_only" "act_only" "deterministic")
     eval_modes=("full" "wind_only" "act_only" "deterministic")
     sets=(1 2 3 4 5 6 7 8 9 10)
@@ -138,7 +172,8 @@ elif [ "$EXPERIMENT" == "dr" ]; then
 
 else
     echo "ERROR: unknown experiment '${EXPERIMENT}'."
-    echo "Usage: sbatch --array=0-799 eval_ablations.sh ablation_uncertainty"
+    echo "Usage: sbatch --array=0-199 eval_ablations.sh ablation_reward"
+    echo "       sbatch --array=0-799 eval_ablations.sh ablation_uncertainty"
     echo "       sbatch --array=0-599 eval_ablations.sh dr"
     exit 1
 fi
