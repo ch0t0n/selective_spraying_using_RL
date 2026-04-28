@@ -456,8 +456,6 @@ python sensitivity_hp.py --write_latex_only --results_dir logs/results
 
 ## 1. Run Step 1 — Default Hyperparameters
 
-> **Prerequisites:** conda env `robot_env` active; `src/env.py` patched (Step 0-A).
-
 Submit two job arrays — one for CrossQ (GPU), one for all others (CPU):
 
 ```bash
