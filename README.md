@@ -374,7 +374,7 @@ for DR in none wind full; do
 done
 ```
 
-### A-8-D. Wind sweep (Figure 4)
+### A-8-D. Wind sweep 
 
 ```bash
 mkdir -p logs/results
@@ -646,7 +646,7 @@ tail -n +2 -q logs/results/tmp/dr/*/*/OOD_*.csv >> "$OUT"
 echo "Merged → $OUT"
 ```
 
-### 8-D. Wind sweep for Figure 4
+### 8-D. Wind sweep
 
 ```bash
 sbatch slurm/eval_wind_sweep.sh          # 100 jobs (2 DR × 10 bins × 5 seeds)
@@ -936,6 +936,6 @@ Step 2 ─► (optional) step8_sensitivity_hp.sh (6 jobs)
 
 ### CoppeliaSim
 
-First, you will need to download and install the CoppeliaSim robotics simulator from [here](https://coppeliarobotics.com/). Once it is installed, open the `simulation\sim_envs\coppeliasim_scene_for_spraying.ttt` scene file in the simulator. Then follow the instructions given in the jupyter notebook: `simulation\new_env_sim.ipynb`.  
+First, you will need to download and install the CoppeliaSim robotics simulator from [here](https://coppeliarobotics.com/). Once it is installed, open the `simulation\sim_envs\coppeliasim_scene_for_spraying_v3.ttt` scene file in the simulator. Then follow the instructions given in the jupyter notebook: `simulation\new_env_sim_v3.ipynb`.  
 
 **IMPORTANT:** You will need to reopen the scene each time before running the simulation. Never save changes to the scene file when closing.
