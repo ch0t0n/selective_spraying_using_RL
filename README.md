@@ -1,6 +1,6 @@
 # Learning to Spray in an Uncertain and Windy Environment
 
-This is the codebase for the paper "Learning to Spray in an Uncertain and Windy Environment". In this paper, we present a Reinforcement Learning (RL) solution for multi-robot systems used for spraying herbicide.  
+This is the codebase for the paper "Learning to Spray in an Uncertain and Windy Environment". In this paper, we present a Reinforcement Learning (RL) solution for multi-robot systems used for precision spraying.  
 
 ## Setup  
 
