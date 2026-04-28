@@ -14,8 +14,6 @@ Figures produced (saved to figures/):
 Usage:
   python plot_figures.py --log_root logs --results_dir results \
                          --figures_dir figures
-
-Author: Jahid Chowdhury Choton (choton@ksu.edu)
 """
 
 import os

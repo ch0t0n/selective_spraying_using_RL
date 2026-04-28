@@ -36,8 +36,6 @@ Notes
 - Fixed to env variation 1, N=3, seed=42 to match the paper description.
 - Run one algorithm per invocation; results are appended to cv_table.csv
   so individual runs can be parallelised across SLURM jobs.
-
-Author: Jahid Chowdhury Choton (choton@ksu.edu)
 """
 
 import os

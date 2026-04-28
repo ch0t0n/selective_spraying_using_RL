@@ -1,9 +1,5 @@
 # Reproduction Guide: From Training to Filled LaTeX Tables and Figures
-
-> All commands assume your working directory is the project root:
-> `/homes/choton/rl4pag/selective_spraying_using_RL/`
-
----
+> All commands assume your working directory is the project root.
 
 ## 1. Run Step 1 — Default Hyperparameters
 

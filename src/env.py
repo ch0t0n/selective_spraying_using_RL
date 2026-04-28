@@ -306,7 +306,6 @@ class MultiRobotEnv(gym.Env):
                 self.robot_positions[i] = new_pos       # Else, move to the new location
 
             # Spray dynamics (vectorized + capacity constraint)
-            step_sprayed_i = 0.0
             if spray > 0 and self.robot_capacities[i] > 0:                              # Only spray if spray rate > 0 and remaining spraying capacities > 0
                 dists = np.linalg.norm(
                     self.robot_positions[i] - self.infected_positions, axis=1)          # Distances from robot to infected locations
@@ -325,7 +324,6 @@ class MultiRobotEnv(gym.Env):
                     self.robot_capacities[i]    -= total                        # Reduce sprayed amount from capacity
                     self.infected_levels[mask]  -= applied                      # Reduce infection levels by applied spray amount
                     total_sprayed               += total                        # Accumulate global spraying amount for all robots
-                    step_sprayed_i               = float(total)
                 else:
                     # Useless spray penalty (part of R_eff)
                     if self.reward_ablation != "no_spr":

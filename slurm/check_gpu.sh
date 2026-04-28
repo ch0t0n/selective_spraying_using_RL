@@ -5,7 +5,7 @@
 #SBATCH --cpus-per-task=2        # Good practice to request a few CPUs
 #SBATCH --mem=8G                 # Request 8GB of RAM
 #SBATCH --time=00:10:00          # 10 minutes is plenty for this check
-#SBATCH --output=/homes/choton/rl4pag/neurips_experiments/logs/gpu_check_%j.log # Saves output to a file with the Job ID
+#SBATCH --output=logs/gpu_check_%j.log # Saves output to a file with the Job ID
 
 # Exit immediately if a command exits with a non-zero status
 set -e

@@ -33,7 +33,7 @@ from coppeliasim_zmqremoteapi_client import RemoteAPIClient
 # ────────────────────────────────────────────────────────────────
 # CONFIG
 # ────────────────────────────────────────────────────────────────
-TRAINED_MODEL_PATH = r"/homes/choton/rl4pag/neurips_experiments_v5/logs/main_default/CrossQ_N3_env1_seed42/CrossQ_N3_env1.zip"
+TRAINED_MODEL_PATH = r".\logs\Apr20_21_v1_seed123\env1_CrossQ.zip"
 JSON_PATH          = os.path.join('.', 'exp_sets', 'stochastic_envs_v2.json')
 ENV_VARIATION      = 1
 NUM_ROBOTS         = 3

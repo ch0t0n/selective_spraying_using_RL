@@ -13,8 +13,6 @@ Handles all 7 experiment steps via command-line arguments:
 Usage example (equivalent to old train_default.py call):
   python train.py --algorithm CrossQ --set 1 --num_robots 3 --seed 42
                   --steps 1000000 --device cuda --experiment main
-
-Author: Jahid Chowdhury Choton (email: choton@ksu.edu)
 """
 
 import os

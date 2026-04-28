@@ -25,8 +25,6 @@ Usage examples:
   python evaluate.py --algorithm CrossQ --set 1 --num_robots 3 --seed 42 \
                      --experiment ablation_reward --ablation no_col \
                      --output_csv results/ablation_reward.csv
-
-Author: Jahid Chowdhury Choton (choton@ksu.edu)
 """
 
 import os

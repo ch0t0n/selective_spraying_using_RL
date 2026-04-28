@@ -1,6 +1,5 @@
 # ================================
 # This is the version 1.0 of the final spraying env confirmed in April 8, 2026
-# Author: Jahid Chowdhury Choton (email: choton@ksu.edu)
 # ================================
 
 import os  # OS operations (paths, folders)
