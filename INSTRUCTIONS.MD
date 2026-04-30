@@ -1,9 +1,464 @@
-# Reproduction Guide: From Training to Filled LaTeX Tables and Figures
+# Learning to Spray in an Uncertain and Windy Environment
+
+This is the codebase for the paper "Learning to Spray in an Uncertain and Windy Environment". In this paper, we present a Reinforcement Learning (RL) solution for multi-robot precision spraying.  
+
+## Setup  
+
+It is recommended to run this codebase on Linux. The necessary packages and libraries needed to run the code are provided in the `requirements.txt` file. Run the following command to install the required packages: 
+
+```
+pip install -r requirements.txt
+```
+
+# Summary (TLDR)
+
+Please follow the instructions from **Part A** if you want to run the experiments on a local machine (which may take a long time). Follow only **Part B** if you have access to an HPC Cluster. **If you want a single file solution of our method, please check the python script `single_file/final_spraying_env_v1.py` which contains the code for training our environment on 10 different variations using CrossQ algorithm.** We tested the single file implementation on a desktop with AMD Ryzen 7 CPU, RTX 3060 GPU, and 16 GB RAM. It took 2 hours per variation (20 hours in total) for training. Once the environment is trained, please follow the instructions from **Simulation** near the end of this document to get instructions on how to run simulation on CoppeliaSim using the trained models. 
+
+# Part A — Local Machine (No HPC Cluster)
+
+This section covers how to run every experiment step on a **single local machine**
+without SLURM or any job scheduler.  All commands call `python` directly.
+
+> **Device note:** Replace `--device cpu` with `--device cuda` anywhere below
+> if you have a CUDA-capable GPU. CrossQ and TQC benefit the most from a GPU.
+
+> **Full reproduction time warning:** The full experiment grid (5 seeds × 10 env
+> sets × 4 robot counts) takes hundreds of CPU-hours per algorithm.  The commands
+> below show both a **minimal single-run** (one seed, one env set) for sanity
+> checking and **loop variants** for fuller coverage.  Prioritise the single-run
+> first; expand to loops only after confirming everything works end-to-end.
+
+---
+
+## A-1. Step 1 — Default Hyperparameters (Local)
+
+### Minimal single run (quick sanity check)
+
+```bash
+# CrossQ, env set 1, 3 robots, seed 42, 2 M steps
+python train.py \
+    --algorithm   CrossQ \
+    --set         1 \
+    --num_robots  3 \
+    --seed        42 \
+    --steps       2000000 \
+    --experiment  main \
+    --device      cpu \
+    --verbose     1 \
+    --log_steps   10000
+```
+
+Outputs land in `logs/main_default/CrossQ_N3_env1_seed42/`.
+
+### Run all algorithms for one env set and one seed
+
+```bash
+for ALG in CrossQ TQC PPO A2C TRPO ARS; do
+    python train.py \
+        --algorithm   $ALG \
+        --set         1 \
+        --num_robots  3 \
+        --seed        42 \
+        --steps       2000000 \
+        --experiment  main \
+        --device      cpu \
+        --verbose     1 \
+        --log_steps   10000
+done
+```
+
+### Expand to multiple seeds / env sets (optional, time-consuming)
+
+```bash
+for ALG in CrossQ TQC PPO A2C TRPO ARS; do
+  for SET in 1 2 3 4 5 6 7 8 9 10; do
+    for SEED in 0 42 123 2024 9999; do
+      for N in 2 3 4 5; do
+        python train.py \
+            --algorithm   $ALG \
+            --set         $SET \
+            --num_robots  $N \
+            --seed        $SEED \
+            --steps       2000000 \
+            --experiment  main \
+            --device      cpu \
+            --verbose     1 \
+            --log_steps   10000
+      done
+    done
+  done
+done
+```
+
+---
+
+## A-2. Step 2 — Hyperparameter Tuning (Local)
+
+On a local machine, run all trials for one algorithm in a **single process** by
+setting `--n_trials` to the number of trials you want.  The `JournalStorage`
+log file is created automatically; there is no need for shared-filesystem
+workarounds when running on one machine.
+
+```bash
+mkdir -p logs/optuna_studies
+
+# Tune each algorithm — 50 trials each (matches HPC budget)
+for ALG in A2C ARS PPO TRPO CrossQ TQC; do
+    python tune.py \
+        --algorithm   $ALG \
+        --device      cpu \
+        --n_trials    50 \
+        --tune_steps  500000 \
+        --storage     logs/optuna_studies/${ALG}_journal.log \
+        --study_name  ${ALG}_tune \
+        --output_json logs/best_hyperparams.json
+done
+```
+
+> **Tip:** `--tune_steps 500000` (500 k) is used above to keep wall-clock time
+> manageable.  The HPC scripts use 2 M steps per trial.  Lower values are
+> faster but may produce noisier estimates.  Increase if time permits.
+
+> **Resuming:** If the process is interrupted, simply re-run the same command.
+> `load_if_exists=True` in `tune.py` picks up where the study left off.
+
+**What this produces:**
+```
+logs/best_hyperparams.json             ← consumed by Step A-3
+logs/optuna_studies/{ALG}_journal.log  ← per-algorithm Optuna log
+```
+
+---
+
+## A-3. Step 3 — Tuned Hyperparameters (Local)
+
+Pass `--hyperparams_json` to load the best parameters found in Step A-2.
+
+### Minimal single run
+
+```bash
+python train.py \
+    --algorithm        CrossQ \
+    --set              1 \
+    --num_robots       3 \
+    --seed             42 \
+    --steps            2000000 \
+    --experiment       main \
+    --hyperparams_json logs/best_hyperparams.json \
+    --device           cpu \
+    --verbose          1 \
+    --log_steps        10000
+```
+
+Outputs land in `logs/main_tuned/CrossQ_N3_env1_seed42/`.
+
+### Loop over all algorithms
+
+```bash
+for ALG in CrossQ TQC PPO A2C TRPO ARS; do
+  for SET in 1 2 3 4 5 6 7 8 9 10; do
+    for SEED in 0 42 123 2024 9999; do
+      for N in 2 3 4 5; do
+        python train.py \
+            --algorithm        $ALG \
+            --set              $SET \
+            --num_robots       $N \
+            --seed             $SEED \
+            --steps            2000000 \
+            --experiment       main \
+            --hyperparams_json logs/best_hyperparams.json \
+            --device           cpu \
+            --verbose          1 \
+            --log_steps        10000
+      done
+    done
+  done
+done
+```
+
+---
+
+## A-4 to A-6. Ablation Training — Reward, Observation, Uncertainty (Local)
+
+All three ablation experiments use the same `train.py` script with different
+`--experiment` and `--ablation` flags.  All fix CrossQ, N=3.
+
+### Step 4 — Reward ablation
+
+```bash
+for CONDITION in full no_term no_spr no_path; do
+  for SET in 1 2 3 4 5 6 7 8 9 10; do
+    for SEED in 0 42 123 2024 9999; do
+      python train.py \
+          --algorithm  CrossQ \
+          --set        $SET \
+          --num_robots 3 \
+          --seed       $SEED \
+          --steps      2000000 \
+          --experiment ablation_reward \
+          --ablation   $CONDITION \
+          --device     cpu \
+          --verbose    1 \
+          --log_steps  10000
+    done
+  done
+done
+```
+
+### Step 5 — Observation ablation
+
+```bash
+for OBS in full no_pos no_inf_hist pos_only; do
+  for SET in 1 2 3 4 5 6 7 8 9 10; do
+    for SEED in 0 42 123 2024 9999; do
+      python train.py \
+          --algorithm  CrossQ \
+          --set        $SET \
+          --num_robots 3 \
+          --seed       $SEED \
+          --steps      2000000 \
+          --experiment ablation_obs \
+          --ablation   $OBS \
+          --device     cpu \
+          --verbose    1 \
+          --log_steps  10000
+    done
+  done
+done
+```
+
+### Step 6 — Uncertainty ablation
+
+```bash
+for MODE in full wind_only act_only deterministic; do
+  for SET in 1 2 3 4 5 6 7 8 9 10; do
+    for SEED in 0 42 123 2024 9999; do
+      python train.py \
+          --algorithm  CrossQ \
+          --set        $SET \
+          --num_robots 3 \
+          --seed       $SEED \
+          --steps      2000000 \
+          --experiment ablation_uncertainty \
+          --ablation   $MODE \
+          --device     cpu \
+          --verbose    1 \
+          --log_steps  10000
+    done
+  done
+done
+```
+
+---
+
+## A-7. Step 7 — Domain Randomization (Local)
+
+```bash
+for DR in none wind full; do
+  for SET in 1 2 3 4 5 6 7 8 9 10; do
+    for SEED in 0 42 123 2024 9999; do
+      for N in 2 3 4 5; do
+        python train.py \
+            --algorithm  CrossQ \
+            --set        $SET \
+            --num_robots $N \
+            --seed       $SEED \
+            --steps      2000000 \
+            --experiment dr \
+            --ablation   $DR \
+            --device     cpu \
+            --verbose    1 \
+            --log_steps  10000
+      done
+    done
+  done
+done
+```
+
+---
+
+## A-8. Post-Training Evaluation (Local)
+
+Main results (Tables 1 & 2), and observation ablation (Table 4) are read **directly from training NPZ files** — no
+separate evaluation step is needed for those.
+
+The experiments below **do** require `evaluate.py`.
+
+### A-8-A. Reward ablation (Table 3)
+
+```bash
+mkdir -p logs/results
+
+for CONDITION in full no_term no_spr no_path; do
+  for SET in 1 2 3 4 5 6 7 8 9 10; do
+    for SEED in 0 42 123 2024 9999; do
+      python evaluate.py \
+          --algorithm  CrossQ \
+          --set        $SET \
+          --num_robots 3 \
+          --seed       $SEED \
+          --experiment ablation_reward \
+          --ablation   $CONDITION \
+          --log_root   logs \
+          --output_csv logs/results/ablation_reward.csv \
+          --device     cpu
+    done
+  done
+done
+```
+
+### A-8-B. Uncertainty ablation cross-evaluation matrix (Table 5)
+
+Each policy trained under one noise condition must be evaluated under all four:
+
+```bash
+mkdir -p logs/results
+
+for TRAIN_MODE in full wind_only act_only deterministic; do
+  for EVAL_MODE in full wind_only act_only deterministic; do
+    for SET in 1 2 3 4 5 6 7 8 9 10; do
+      for SEED in 0 42 123 2024 9999; do
+        python evaluate.py \
+            --algorithm              CrossQ \
+            --set                    $SET \
+            --num_robots             3 \
+            --seed                   $SEED \
+            --experiment             ablation_uncertainty \
+            --ablation               $TRAIN_MODE \
+            --eval_uncertainty_mode  $EVAL_MODE \
+            --log_root               logs \
+            --output_csv             logs/results/ablation_uncertainty.csv \
+            --device                 cpu
+      done
+    done
+  done
+done
+```
+
+### A-8-C. Domain randomization — in-distribution & OOD (Table 7)
+
+```bash
+mkdir -p logs/results
+
+for DR in none wind full; do
+  for SET in 1 2 3 4 5 6 7 8 9 10; do
+    for SEED in 0 42 123 2024 9999; do
+      for N in 2 3 4 5; do
+
+        # In-distribution: wind 0–1 m/s (training range)
+        python evaluate.py \
+            --algorithm     CrossQ \
+            --set           $SET \
+            --num_robots    $N \
+            --seed          $SEED \
+            --experiment    dr \
+            --ablation      $DR \
+            --eval_wind_min 0.0 \
+            --eval_wind_max 0.5 \
+            --log_root      logs \
+            --output_csv    logs/results/dr_inDist.csv \
+            --device        cpu
+
+        # Out-of-distribution: wind 1–3 m/s
+        python evaluate.py \
+            --algorithm     CrossQ \
+            --set           $SET \
+            --num_robots    $N \
+            --seed          $SEED \
+            --experiment    dr \
+            --ablation      $DR \
+            --eval_wind_min 0.5 \
+            --eval_wind_max 2.0 \
+            --log_root      logs \
+            --output_csv    logs/results/dr_OOD.csv \
+            --device        cpu
+      done
+    done
+  done
+done
+```
+
+### A-8-D. Wind sweep 
+
+```bash
+mkdir -p logs/results
+
+wind_mins=(0.0 0.2 0.4 0.6 0.8 1.0 1.2 1.4 1.6 1.8)
+wind_maxs=(0.2 0.4 0.6 0.8 1.0 1.2 1.4 1.6 1.8 2.0)
+
+for DR in none full; do
+  for BIN in 0 1 2 3 4 5 6 7 8 9; do
+    for SEED in 0 42 123 2024 9999; do
+      python evaluate.py \
+          --algorithm     CrossQ \
+          --set           1 \
+          --num_robots    3 \
+          --seed          $SEED \
+          --experiment    dr \
+          --ablation      $DR \
+          --eval_wind_min ${wind_mins[$BIN]} \
+          --eval_wind_max ${wind_maxs[$BIN]} \
+          --log_root      logs \
+          --output_csv    logs/results/wind_sweep.csv \
+          --device        cpu
+    done
+  done
+done
+```
+
+---
+
+## A-9. Aggregate Results and Generate Table CSVs (Local)
+
+Identical to the HPC version — no changes needed:
+
+```bash
+python analyze_results.py --log_root logs --results_dir logs/results
+```
+
+---
+
+## A-10. Generate All Figures (Local)
+
+```bash
+python plot_figures.py \
+    --log_root    logs \
+    --results_dir logs/results \
+    --figures_dir figures
+```
+
+---
+
+## A-11. Hyperparameter Sensitivity (Table 6, Local)
+
+```bash
+for ALG in TRPO CrossQ PPO A2C TQC ARS; do
+    python sensitivity_hp.py --algorithm $ALG --results_dir logs/results
+done
+
+# Write LaTeX rows after all six finish
+python sensitivity_hp.py --write_latex_only --results_dir logs/results
+```
+
+---
+
+## Tips for Local Runs
+
+| Goal | Suggestion |
+|---|---|
+| Smoke-test end-to-end quickly | Use `--steps 50000` and one seed/set |
+| Speed up CPU training | Increase `--num_envs` (e.g. `--num_envs 8`) to match your CPU core count |
+| Use a GPU | Set `--device cuda`; most helpful for CrossQ and TQC |
+| Resume interrupted tuning | Re-run the same `tune.py` command; `load_if_exists=True` continues the study |
+| Avoid re-running finished evals | `evaluate.py` automatically skips rows already present in the output CSV |
+| Parallelise without SLURM | Run multiple terminal windows or use `&` with `wait` in a shell script |
+
+---
+
+# Part B — HPC Cluster (SLURM)
 > All commands assume your working directory is the project root.
 
-## 1. Run Step 1 — Default Hyperparameters
-
-> **Prerequisites:** conda env `robot_env` active; `src/env.py` patched (Step 0-A).
+## B-1. Run Step 1 — Default Hyperparameters
 
 Submit two job arrays — one for CrossQ (GPU), one for all others (CPU):
 
@@ -27,7 +482,7 @@ logs/main_default/{ALG}_N{N}_env{SET}_seed{SEED}/
 
 ---
 
-## 2. Run Step 2 — Optuna Hyperparameter Tuning
+## B-2. Run Step 2 — Optuna Hyperparameter Tuning
 
 Each SLURM job runs **one Optuna trial**. All jobs for the same algorithm share a
 single `JournalStorage` log file (NFS-safe, append-only).
@@ -45,7 +500,7 @@ logs/optuna_studies/{ALG}_journal.log  ← per-algorithm Optuna log
 
 ---
 
-## 3. Run Step 3 — Tuned Hyperparameters
+## B-3. Run Step 3 — Tuned Hyperparameters
 
 ```bash
 sbatch slurm/step3_crossq_tuned.sh       # 200 jobs
@@ -61,7 +516,7 @@ logs/main_tuned/{ALG}_N{N}_env{SET}_seed{SEED}/
 
 ---
 
-## 4–6. Run Ablation Training — Reward, Observation, Uncertainty
+## B-4–6. Run Ablation Training — Reward, Observation, Uncertainty
 
 Steps 4, 5, and 6 are handled by a single merged script.
 Submit one job array per ablation experiment:
@@ -96,7 +551,7 @@ logs/ablation_uncertainty_{MODE}/CrossQ_N3_env{SET}_seed{SEED}/
 
 ---
 
-## 7. Run Step 7 — Domain Randomization
+## B-7. Run Step 7 — Domain Randomization
 
 ```bash
 sbatch slurm/step7_dr.sh           # 600 jobs (3 DR modes × 10 sets × 4 N × 5 seeds)
@@ -104,7 +559,7 @@ sbatch slurm/step7_dr.sh           # 600 jobs (3 DR modes × 10 sets × 4 N × 5
 
 ---
 
-## 8. Post-Training Evaluation
+## B-8. Post-Training Evaluation
 
 - **Uncertainty ablation (Table 5):** The cross-evaluation matrix evaluates
   each trained policy under all four noise conditions (not just the one it
@@ -112,7 +567,7 @@ sbatch slurm/step7_dr.sh           # 600 jobs (3 DR modes × 10 sets × 4 N × 5
 - **Domain randomization (Table 7):** Policies must be evaluated under
   controlled in-distribution and out-of-distribution wind ranges.
 
-All other tables (main results, reward ablation, obs ablation) are filled
+All other tables (main results, obs ablation) are filled
 directly from the training NPZ files — no separate eval step is required.
 
 > **Re-submission safety:** `evaluate.py` checks whether a matching row already
@@ -122,7 +577,7 @@ directly from the training NPZ files — no separate eval step is required.
 > exits immediately — so re-submitting failed array indices never produces
 > duplicate rows in the CSV.
 
-### 8-A. Reward ablation (Table 3)
+### B-8-A. Reward ablation (Table 3)
 
 `eval_ablations.sh` runs 50-episode rollouts to capture terminal-condition
 statistics (`sprayed_pct`, `collision_pct`, `max_steps_pct`) that the training
@@ -147,7 +602,7 @@ tail -n +2 -q logs/results/tmp/ablation_reward/*/set*/result_*.csv >> "$OUT"
 echo "Merged → $OUT"
 ```
 
-### 8-B. Uncertainty ablation (Table 5)
+### B-8-B. Uncertainty ablation (Table 5)
 
 
 The uncertainty ablation requires a cross-evaluation matrix
@@ -169,7 +624,7 @@ tail -n +2 -q logs/results/tmp/ablation_uncertainty/train_*_eval_*/set*/result_*
 echo "Merged → $OUT"
 ```
 
-### 8-C. Domain randomization (Table 7)
+### B-8-C. Domain randomization (Table 7)
 
 ```bash
 sbatch --array=0-599 slurm/eval_ablations.sh dr
@@ -193,7 +648,7 @@ tail -n +2 -q logs/results/tmp/dr/*/*/OOD_*.csv >> "$OUT"
 echo "Merged → $OUT"
 ```
 
-### 8-D. Wind sweep for Figure 4
+### B-8-D. Wind sweep
 
 ```bash
 sbatch slurm/eval_wind_sweep.sh          # 100 jobs (2 DR × 10 bins × 5 seeds)
@@ -218,7 +673,7 @@ wc -l logs/results/wind_sweep.csv            # 101  (100 runs + header)
 
 ---
 
-## 8-E. (Optional) Hyperparameter Sensitivity — Table 6
+## B-8-E. (Optional) Hyperparameter Sensitivity — Table 6
 
 > This step is **independent** of Steps 1–8D and can be run at any time
 > after Step 2 has produced `logs/best_hyperparams.json`.
@@ -252,12 +707,12 @@ python sensitivity_hp.py --write_latex_only --results_dir logs/results
 > ⚠️ **Known issue in `step8_sensitivity_hp.sh`:** the script currently
 > invokes Python via `conda run -n robot_env python3 ...`.  With
 > `#SBATCH --export=NONE`, `conda` is not on PATH and the job will fail.
-> Replace line 41 with the full interpreter path:
-> `/homes/choton/miniconda3/envs/robot_env/bin/python3 sensitivity_hp.py \`
+> Replace line with the full interpreter path:
+> `python3 sensitivity_hp.py \`
 
 ---
 
-## 9. Aggregate Results and Generate Table CSVs
+## B-9. Aggregate Results and Generate Table CSVs
 
 Once **all** evaluation jobs are complete:
 
@@ -296,12 +751,12 @@ python analyze_results.py --log_root logs --results_dir logs/results
 
 ---
 
-## 10. Generate All Figures
+## B-10. Generate All Figures
 
 ```bash
 python plot_figures.py \
     --log_root    logs \
-    --results_dir results \
+    --results_dir logs/results \
     --figures_dir figures
 ```
 
@@ -319,7 +774,7 @@ python plot_figures.py \
 
 ---
 
-## 11. Fill LaTeX Tables
+## B-11. Fill LaTeX Tables
 
 ### Table 1 & 2 (main results)
 
@@ -402,7 +857,7 @@ from log timestamps, and inference latency from a timed loop.
 
 ---
 
-## 12. Update Figure Captions
+## B-12. Update Figure Captions
 
 After generating figures, update the captions and `\includegraphics` paths in
 `full_experiments.tex` to point to the correct figure files, e.g.:
@@ -477,3 +932,12 @@ Step 7 ─► eval_ablations.sh (dr, 600 jobs)
 Step 2 ─► (optional) step8_sensitivity_hp.sh (6 jobs)
               └─► python sensitivity_hp.py --write_latex_only → Tab. 6
 ```
+
+
+# Simulation  
+
+## CoppeliaSim
+
+First, you will need to download and install the CoppeliaSim robotics simulator from [here](https://coppeliarobotics.com/). Once it is installed, open the `simulation\sim_envs\coppeliasim_scene_for_spraying_v3.ttt` scene file in the simulator. Then follow the instructions given in the jupyter notebook: `simulation\new_env_sim_v3.ipynb`.  
+
+**IMPORTANT:** You will need to reopen the scene each time before running the simulation. Never save changes to the scene file when closing.
