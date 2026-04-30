@@ -1,6 +1,6 @@
 # Learning to Spray in an Uncertain and Windy Environment
 
-This is the codebase for the paper "Learning to Spray in an Uncertain and Windy Environment". In this paper, we present a Reinforcement Learning (RL) solution for multi-robot systems used for precision spraying.  
+This is the codebase for the paper "Learning to Spray in an Uncertain and Windy Environment". In this paper, we present a Reinforcement Learning (RL) solution for multi-robot precision spraying.  
 
 ## Setup  
 
@@ -9,6 +9,10 @@ It is recommended to run this codebase on Linux. The necessary packages and libr
 ```
 pip install -r requirements.txt
 ```
+
+# Summary (TLDR)
+
+Please follow the instructions from **Part A** if you want to run the experiments on a local machine (which may take a long time). Follow only **Part B** if you have access to an HPC Cluster. **If you want a single file solution of our method, please check the python script `single_file/final_spraying_env_v1.py` which contains the code for training our environment on 10 different variations using CrossQ algorithm.** We tested the single file implementation on a desktop with AMD Ryzen 7 CPU, RTX 3060 GPU, and 16 GB RAM. It took 2 hours per variation (20 hours in total) for training. Once the environment is trained, please follow the instructions from **Simulation** near the end of this document to get instructions on how to run simulation on CoppeliaSim using the trained models. 
 
 # Part A — Local Machine (No HPC Cluster)
 
@@ -454,7 +458,7 @@ python sensitivity_hp.py --write_latex_only --results_dir logs/results
 # Part B — HPC Cluster (SLURM)
 > All commands assume your working directory is the project root.
 
-## 1. Run Step 1 — Default Hyperparameters
+## B-1. Run Step 1 — Default Hyperparameters
 
 Submit two job arrays — one for CrossQ (GPU), one for all others (CPU):
 
@@ -478,7 +482,7 @@ logs/main_default/{ALG}_N{N}_env{SET}_seed{SEED}/
 
 ---
 
-## 2. Run Step 2 — Optuna Hyperparameter Tuning
+## B-2. Run Step 2 — Optuna Hyperparameter Tuning
 
 Each SLURM job runs **one Optuna trial**. All jobs for the same algorithm share a
 single `JournalStorage` log file (NFS-safe, append-only).
@@ -496,7 +500,7 @@ logs/optuna_studies/{ALG}_journal.log  ← per-algorithm Optuna log
 
 ---
 
-## 3. Run Step 3 — Tuned Hyperparameters
+## B-3. Run Step 3 — Tuned Hyperparameters
 
 ```bash
 sbatch slurm/step3_crossq_tuned.sh       # 200 jobs
@@ -512,7 +516,7 @@ logs/main_tuned/{ALG}_N{N}_env{SET}_seed{SEED}/
 
 ---
 
-## 4–6. Run Ablation Training — Reward, Observation, Uncertainty
+## B-4–6. Run Ablation Training — Reward, Observation, Uncertainty
 
 Steps 4, 5, and 6 are handled by a single merged script.
 Submit one job array per ablation experiment:
@@ -547,7 +551,7 @@ logs/ablation_uncertainty_{MODE}/CrossQ_N3_env{SET}_seed{SEED}/
 
 ---
 
-## 7. Run Step 7 — Domain Randomization
+## B-7. Run Step 7 — Domain Randomization
 
 ```bash
 sbatch slurm/step7_dr.sh           # 600 jobs (3 DR modes × 10 sets × 4 N × 5 seeds)
@@ -555,7 +559,7 @@ sbatch slurm/step7_dr.sh           # 600 jobs (3 DR modes × 10 sets × 4 N × 5
 
 ---
 
-## 8. Post-Training Evaluation
+## B-8. Post-Training Evaluation
 
 - **Uncertainty ablation (Table 5):** The cross-evaluation matrix evaluates
   each trained policy under all four noise conditions (not just the one it
@@ -573,7 +577,7 @@ directly from the training NPZ files — no separate eval step is required.
 > exits immediately — so re-submitting failed array indices never produces
 > duplicate rows in the CSV.
 
-### 8-A. Reward ablation (Table 3)
+### B-8-A. Reward ablation (Table 3)
 
 `eval_ablations.sh` runs 50-episode rollouts to capture terminal-condition
 statistics (`sprayed_pct`, `collision_pct`, `max_steps_pct`) that the training
@@ -598,7 +602,7 @@ tail -n +2 -q logs/results/tmp/ablation_reward/*/set*/result_*.csv >> "$OUT"
 echo "Merged → $OUT"
 ```
 
-### 8-B. Uncertainty ablation (Table 5)
+### B-8-B. Uncertainty ablation (Table 5)
 
 
 The uncertainty ablation requires a cross-evaluation matrix
@@ -620,7 +624,7 @@ tail -n +2 -q logs/results/tmp/ablation_uncertainty/train_*_eval_*/set*/result_*
 echo "Merged → $OUT"
 ```
 
-### 8-C. Domain randomization (Table 7)
+### B-8-C. Domain randomization (Table 7)
 
 ```bash
 sbatch --array=0-599 slurm/eval_ablations.sh dr
@@ -644,7 +648,7 @@ tail -n +2 -q logs/results/tmp/dr/*/*/OOD_*.csv >> "$OUT"
 echo "Merged → $OUT"
 ```
 
-### 8-D. Wind sweep
+### B-8-D. Wind sweep
 
 ```bash
 sbatch slurm/eval_wind_sweep.sh          # 100 jobs (2 DR × 10 bins × 5 seeds)
@@ -669,7 +673,7 @@ wc -l logs/results/wind_sweep.csv            # 101  (100 runs + header)
 
 ---
 
-## 8-E. (Optional) Hyperparameter Sensitivity — Table 6
+## B-8-E. (Optional) Hyperparameter Sensitivity — Table 6
 
 > This step is **independent** of Steps 1–8D and can be run at any time
 > after Step 2 has produced `logs/best_hyperparams.json`.
@@ -708,7 +712,7 @@ python sensitivity_hp.py --write_latex_only --results_dir logs/results
 
 ---
 
-## 9. Aggregate Results and Generate Table CSVs
+## B-9. Aggregate Results and Generate Table CSVs
 
 Once **all** evaluation jobs are complete:
 
@@ -747,7 +751,7 @@ python analyze_results.py --log_root logs --results_dir logs/results
 
 ---
 
-## 10. Generate All Figures
+## B-10. Generate All Figures
 
 ```bash
 python plot_figures.py \
@@ -770,7 +774,7 @@ python plot_figures.py \
 
 ---
 
-## 11. Fill LaTeX Tables
+## B-11. Fill LaTeX Tables
 
 ### Table 1 & 2 (main results)
 
@@ -853,7 +857,7 @@ from log timestamps, and inference latency from a timed loop.
 
 ---
 
-## 12. Update Figure Captions
+## B-12. Update Figure Captions
 
 After generating figures, update the captions and `\includegraphics` paths in
 `full_experiments.tex` to point to the correct figure files, e.g.:
@@ -930,9 +934,9 @@ Step 2 ─► (optional) step8_sensitivity_hp.sh (6 jobs)
 ```
 
 
-## Simulation  
+# Simulation  
 
-### CoppeliaSim
+## CoppeliaSim
 
 First, you will need to download and install the CoppeliaSim robotics simulator from [here](https://coppeliarobotics.com/). Once it is installed, open the `simulation\sim_envs\coppeliasim_scene_for_spraying_v3.ttt` scene file in the simulator. Then follow the instructions given in the jupyter notebook: `simulation\new_env_sim_v3.ipynb`.  
 
