@@ -6,40 +6,39 @@ from src.utils import is_inside_polygon, compute_min_dist
 # ================================================================
 # MultiRobotEnv — unified environment supporting:
 #
-#   reward_ablation  : "full" | "no_col" | "no_cov" | "no_eff"
+#   reward_ablation  : "full" | "no_term" | "no_spr" | "no_path"
 #       "full"       → all reward terms active (default)
-#       "no_col"     → collision penalty + termination disabled
-#       "no_cov"     → coverage terms disabled:
-#                      remaining-infection penalty, success bonus,
-#                      and distance-shaping reward
-#       "no_eff"     → efficiency terms disabled:
+#       "no_term"    → collision penalty and success bonus disabled (still terminates episodes)
+#       "no_spr"     → spraying terms disabled:
+#                      remaining-infection penalty, useless spray penalty disabled 
+#                      (but spray bonus remains since it is the most important part)
+#       "no_path"    → path terms disabled:
 #                      energy penalty, per-robot speed penalty,
-#                      wasted-spray penalty, empty-capacity spray
-#                      penalty, path penalty, time penalty
+#                      path penalty, time penalty
 #
-#   obs_mode         : "base" | "full" | "no_wind" | "no_spray_hist" | "pos_only"
-#       "base"       → positions + velocities + capacities +
-#                      infection levels + infected coordinates  (5N+3M)
-#       "full"       → base + wind vector + spray history  (6N+3M+2)
-#       "no_wind"    → base + spray history  (6N+3M)
-#       "no_spray_hist" → base + wind vector  (5N+3M+2)
-#       "pos_only"   → normalized robot positions only  (2N)
+#   obs_mode         : "full" | "no_pos" | "no_inf_hist" | "pos_only"
+#       "full"       → original obs: positions + velocities +
+#                      capacities + infection levels  (5N+M)
+#       "no_pos"     → capacities + infection levels (N+M)
+#       "no_inf_hist" → positions + velocities + capacities  (5N)
+#       "pos_only"   → robot positions only  (2N)
 #
 #   uncertainty_mode : "full" | "wind_only" | "act_only" | "deterministic"
-#       "full"       → wind, wind-direction, actuation, spray,
-#                      observation, and initial-position noise
+#       "full"       → all noise sources active (default)
 #       "wind_only"  → only wind noise; action + spray noise = 0
 #       "act_only"   → only actuation noise; wind + spray noise = 0
 #       "deterministic" → all noise sources = 0
+#       Note: "wind_only", "act_only", & "deterministic" still have randomness at the episode level in reset() - Randomise starting positions
 #
 #   dr_mode          : "none" | "wind" | "full"
 #       "none"       → no domain randomization (default)
 #       "wind"       → re-sample wind speed & direction each episode
 #       "full"       → re-sample wind + actuation noise std +
 #                      spray radius + UAV mass + thrust scaling
+#       Note: "none" & "wind" still have randomness at the episode level in reset() - wind_mag & wind_dir
 #
-# Constructor defaults remain compatible with existing callers, but
-# the default observation and spray dynamics have been updated.
+# All parameters default to the original behaviour so existing code
+# that does not pass these arguments continues to work unchanged.
 # ================================================================
 
 class MultiRobotEnv(gym.Env):
@@ -48,27 +47,24 @@ class MultiRobotEnv(gym.Env):
         self,
         field_info,
         render_mode=None,
-        wind_par=None,
-        wind_override=False,
+        wind_par=[0, 0],
         num_robots=3,
         render_scale=5,
         max_steps=1000,
         # ── experiment control ──────────────────────────────────────
         reward_ablation="full",
-        obs_mode="base",
+        obs_mode="full",
         uncertainty_mode="full",
         dr_mode="none",
-        wind_noise_override=None,
-        wind_dir_noise_override=None,
     ):
         super().__init__()
 
         # Validate experiment parameters
-        assert reward_ablation in ("full", "no_col", "no_cov", "no_eff"), \
+        assert reward_ablation in ("full", "no_term" , "no_spr" , "no_path"), \
             f"Unknown reward_ablation: {reward_ablation}"
-        assert obs_mode in ("base", "full", "no_wind", "no_spray_hist", "pos_only"), \
+        assert obs_mode in ("full" , "no_pos" , "no_inf_hist" , "pos_only"), \
             f"Unknown obs_mode: {obs_mode}"
-        assert uncertainty_mode in ("full", "wind_only", "act_only", "deterministic"), \
+        assert uncertainty_mode in ("full" , "wind_only" , "act_only" , "deterministic"), \
             f"Unknown uncertainty_mode: {uncertainty_mode}"
         assert dr_mode in ("none", "wind", "full"), \
             f"Unknown dr_mode: {dr_mode}"
@@ -128,27 +124,23 @@ class MultiRobotEnv(gym.Env):
         self._nominal_infected_radius = 5   # nominal spray radius (DR may override per-episode)
         self.infected_radius = self._nominal_infected_radius
         self.spray_sigma     = self.infected_radius / 2
-        self.infected_positions_init = np.array(
+        self.init_infected_positions = np.array(
             [[x, y] for x, y, _ in field_info['infected_locations']], dtype=np.float32)
-        self.infected_levels_init = np.array(
+        self.init_infected_levels = np.array(
             [lvl for _, _, lvl in field_info['infected_locations']], dtype=np.float32)
-        self.max_infection_level = np.max(self.infected_levels_init)
-        self.initial_infection_sum = np.sum(self.infected_levels_init)
-
+        self.max_infection_level = np.max(self.init_infected_levels)
+        self.initial_infection_sum = np.sum(self.init_infected_levels)
         # ── Base wind (mean) magnitude and direction
-        if wind_par is None:
-            wind_par = (0.0, 0.0)
         self.base_wind_mag, self.base_wind_dir = wind_par
-        self.wind_override = bool(wind_override)
 
         # ── Noise stds — set by uncertainty_mode ────────────────────
         # These are the *nominal* values; DR "full" may override
         # action_noise_std at the start of each episode.
         _noise = {
-            "full":          dict(wind=0.20, wind_dir=5.0, action=0.10, spray=0.05, obs=0.01, init_pos=0.50),
-            "wind_only":     dict(wind=0.20, wind_dir=5.0, action=0.00, spray=0.00, obs=0.00, init_pos=0.00),
-            "act_only":      dict(wind=0.00, wind_dir=0.0, action=0.10, spray=0.00, obs=0.00, init_pos=0.00),
-            "deterministic": dict(wind=0.00, wind_dir=0.0, action=0.00, spray=0.00, obs=0.00, init_pos=0.00),
+            "full":          dict(wind=0.20, wind_dir=5.0, action=0.10, spray=0.05, obs=0.01),
+            "wind_only":     dict(wind=0.20, wind_dir=5.0, action=0.00, spray=0.00, obs=0.00),
+            "act_only":      dict(wind=0.00, wind_dir=0.0, action=0.10, spray=0.00, obs=0.00),
+            "deterministic": dict(wind=0.00, wind_dir=0.0, action=0.00, spray=0.00, obs=0.00),
         }[uncertainty_mode]
 
         self.wind_noise_std         = _noise["wind"]
@@ -156,12 +148,7 @@ class MultiRobotEnv(gym.Env):
         self.action_noise_std       = _noise["action"]
         self.spray_noise_std        = _noise["spray"]
         self.obs_noise_std          = _noise["obs"]
-        self.init_position_noise    = _noise["init_pos"]
-
-        if wind_noise_override is not None:
-            self.wind_noise_std = float(wind_noise_override)
-        if wind_dir_noise_override is not None:
-            self.wind_dir_noise_std = float(wind_dir_noise_override)
+        self.init_position_noise    = 0.5
 
         # ── Nominal noise stds (DR "full" samples around these) ─────
         self._nominal_action_noise_std = _noise["action"]
@@ -186,11 +173,8 @@ class MultiRobotEnv(gym.Env):
         #    2. (v_x, v_y) velocities along x and y axis of each robot
         #    3. current spraying capacity (C_p(t))
         #    4. current infection levels of M locations
-        #    5. (x, y) coordinates of each infected location
         # Therefore, total observations = 2*num_robots (positions) + 2*num_robots (velocities) + 
-        # num_robots (spraying capacities) + M infection levels + 2*M infected coordinates
-        # = 5*num_robots + 3*M
-
+        # num_robots (spraying capacities) + M (num_inf_locations) = 5*num_robots + M
         # Used to normalize coordinates into the field bounding box.
         self._coord_offset = np.array([self.min_x, self.min_y], dtype=np.float32)
         self._coord_norm = np.maximum(
@@ -199,14 +183,13 @@ class MultiRobotEnv(gym.Env):
         )
         
         # ── Observation space — depends on obs_mode ──────────────────
-        M = len(self.infected_levels_init)
+        M = len(self.init_infected_levels)
         N = num_robots
         _obs_dims = {
-            "base":          5*N + 3*M,       # 
-            "full":          6*N + 3*M + 2,   # base + wind(2) + spray_hist(N)
-            "no_wind":       6*N + 3*M,       # base + spray_hist(N)
-            "no_spray_hist": 5*N + 3*M + 2,   # base + wind(2)
-            "pos_only":      2*N,             # positions only
+            "full":          5*N + M,       # original
+            "no_pos":        N + M,         # capacities(N) + inf_levels(M)
+            "no_inf_hist":   5*N,     # 5N 
+            "pos_only":      2*N,           # positions only
         }
         self.observation_space = gym.spaces.Box(
             low=-np.inf, high=np.inf,
@@ -229,30 +212,22 @@ class MultiRobotEnv(gym.Env):
             }
             for i in range(self.num_robots)
         }
-
         infection_norm = self.infected_levels / self.max_infection_level
         robot_positions_normalized = (self.robot_positions - self._coord_offset) / self._coord_norm
 
-        base = np.concatenate([
-            robot_positions_normalized.flatten(),
+        if self.obs_mode == "full":
+            state = np.concatenate([robot_positions_normalized.flatten(),
             self.robot_velocities.flatten(),
             self.robot_capacities,
-            infection_norm,
-            self.infected_positions_normalized.flatten(),
-        ])
-
-        if self.obs_mode == "base":
-            state = base
-        elif self.obs_mode == "full":
-            state = np.concatenate([base, self._current_wind_vec, self.spray_history])
-        elif self.obs_mode == "no_wind":
-            state = np.concatenate([base, self.spray_history])
-        elif self.obs_mode == "no_spray_hist":
-            state = np.concatenate([base, self._current_wind_vec])
+            infection_norm])
+        elif self.obs_mode == "no_pos":
+            state = np.concatenate([self.robot_capacities, infection_norm])
+        elif self.obs_mode == "no_inf_hist":
+            state = np.concatenate([robot_positions_normalized.flatten(),
+            self.robot_velocities.flatten(),
+            self.robot_capacities])
         elif self.obs_mode == "pos_only":
             state = robot_positions_normalized.flatten().copy()
-        else:
-            raise RuntimeError(f"Unknown obs_mode after validation: {self.obs_mode}")
 
         if self.obs_noise_std > 0:
             state = state + self.np_random.normal(0, self.obs_noise_std, size=state.shape)
@@ -268,13 +243,8 @@ class MultiRobotEnv(gym.Env):
         # ── Domain randomization — re-sample base params each episode ─
         if self.dr_mode == "none":
             # Standard: add small episode-level noise to the nominal wind
-            # unless evaluation explicitly requested a fixed wind.
-            if self.wind_override:
-                self.wind_mag = self.base_wind_mag
-                self.wind_dir = self.base_wind_dir
-            else:
-                self.wind_mag = self.base_wind_mag + self.np_random.normal(0, self.wind_noise_std)
-                self.wind_dir = self.base_wind_dir + self.np_random.normal(0, self.wind_dir_noise_std)
+            self.wind_mag = self.base_wind_mag + self.np_random.normal(0, self.wind_noise_std)
+            self.wind_dir = self.base_wind_dir + self.np_random.normal(0, self.wind_dir_noise_std)
             # Restore nominal physical params (may have been overridden last episode)
             self.action_noise_std = self._nominal_action_noise_std
             self.infected_radius  = self._nominal_infected_radius
@@ -283,13 +253,9 @@ class MultiRobotEnv(gym.Env):
             self.thrust_power     = self._nominal_thrust_power
 
         elif self.dr_mode == "wind":
-            # Randomise wind unless evaluation explicitly requested a fixed wind.
-            if self.wind_override:
-                self.wind_mag = self.base_wind_mag
-                self.wind_dir = self.base_wind_dir
-            else:
-                self.wind_mag = float(self.np_random.uniform(0.0, 1.0))
-                self.wind_dir = float(np.degrees(self.np_random.uniform(0.0, 2 * np.pi)))
+            # Randomise wind speed and direction uniformly
+            self.wind_mag = float(self.np_random.uniform(0.0, 1.0))
+            self.wind_dir = float(np.degrees(self.np_random.uniform(0.0, 2 * np.pi)))
             self.action_noise_std = self._nominal_action_noise_std
             self.infected_radius  = self._nominal_infected_radius
             self.spray_sigma      = self.infected_radius / 2
@@ -297,14 +263,9 @@ class MultiRobotEnv(gym.Env):
             self.thrust_power     = self._nominal_thrust_power
 
         elif self.dr_mode == "full":
-            # Randomise all physical parameters.  Wind can still be fixed
-            # for evaluation sweeps while the other DR parameters vary.
-            if self.wind_override:
-                self.wind_mag = self.base_wind_mag
-                self.wind_dir = self.base_wind_dir
-            else:
-                self.wind_mag = float(self.np_random.uniform(0.0, 1.0))
-                self.wind_dir = float(np.degrees(self.np_random.uniform(0.0, 2 * np.pi)))
+            # Randomise all physical parameters
+            self.wind_mag         = float(self.np_random.uniform(0.0, 1.0))
+            self.wind_dir         = float(np.degrees(self.np_random.uniform(0.0, 2 * np.pi)))
             self.action_noise_std = float(self.np_random.uniform(0.01, 0.10))
             r0 = self._nominal_infected_radius
             self.infected_radius  = float(self.np_random.uniform(0.8 * r0, 1.2 * r0))
@@ -319,17 +280,9 @@ class MultiRobotEnv(gym.Env):
         # ── Initialise dynamic state ─────────────────────────────────
         self.robot_velocities = np.zeros((self.num_robots, 2), dtype=np.float32)
         self.robot_capacities = self.init_robot_capacities.copy()
-        self.infected_positions = self.infected_positions_init.copy()
+        self.infected_positions = self.init_infected_positions.copy()
         self.infected_positions_normalized = (self.infected_positions - self._coord_offset) / self._coord_norm
-        self.infected_levels    = self.infected_levels_init.copy()
-
-        # ── Auxiliary state for obs_mode ─────────────────────────────
-        self.spray_history       = np.zeros(self.num_robots, dtype=np.float32)
-        theta0 = np.radians(self.wind_dir)
-        self._current_wind_vec   = np.array(
-            [self.wind_mag * np.cos(theta0), self.wind_mag * np.sin(theta0)],
-            dtype=np.float32,
-        )
+        self.infected_levels    = self.init_infected_levels.copy()
 
         # ── Episode counters ─────────────────────────────────────────
         self.step_count       = 0
@@ -351,12 +304,10 @@ class MultiRobotEnv(gym.Env):
         wind_dir = self.wind_dir + self.np_random.normal(0, self.wind_dir_noise_std)
         theta = np.radians(wind_dir)
         wind  = np.array([wind_mag * np.cos(theta), wind_mag * np.sin(theta)])
-        self._current_wind_vec = wind.astype(np.float32)  # track for obs
 
         total_sprayed = 0                       # Track total infection reduced this step (for reward)
         for i in range(self.num_robots):        # For each robot
             ax, ay, spray = actions[i]          # Get actual actions: thrust_x, thrust_y, sigma (spray amount)
-            spray = float(np.clip(spray, 0.0, 1.0))
 
             # Action noise + scaling
             ax = ax * self.thrust_power + self.np_random.normal(0, self.action_noise_std)
@@ -377,55 +328,55 @@ class MultiRobotEnv(gym.Env):
             else:
                 self.robot_positions[i] = new_pos       # Else, move to the new location
 
+            # Metrics (per step, per robot)
+            step_spray_used_i = 0.0
+            step_spray_applied_i = 0.0   # 'successful' spray
+            step_spray_wasted_i = 0.0    # 'wasted' spray i.e. spray missed infection - sprayed healthy areas and wasted resources
+            empty_capacity_spray_i = 0.0 # spray action > capacity (useful?)
             # Spray dynamics (vectorized + capacity constraint)
-            spray_used = 0.0
-            step_sprayed_i = 0.0
-            step_wasted_i = 0.0
-            empty_capacity_spray_i = 0.0
-            if spray > 0:
-                available_capacity = float(self.robot_capacities[i])
+            available_capacity = float(self.robot_capacities[i])
+            if spray > 0: 
                 if available_capacity <= 0.0:
-                    empty_capacity_spray_i = spray
-                else:
-                    spray_used = min(spray, available_capacity)
-                    # Consume capacity even if the robot misses all infection.
-                    self.robot_capacities[i] = max(0.0, available_capacity - spray_used)
-                    empty_capacity_spray_i = max(0.0, spray - spray_used)
+                    empty_capacity_spray_i = spray                               # All spray command is useless since no capacity left
+                else:                                                            # Only spray if spray rate > 0 and remaining spraying capacities > 0
+                    step_spray_used_i = min(spray, available_capacity)
+                    empty_capacity_spray_i = max(0.0, spray - step_spray_used_i) # Amount of spray that is beyond the available capacity (useless since it cannot be applied)   
 
                     dists = np.linalg.norm(
                         self.robot_positions[i] - self.infected_positions, axis=1)          # Distances from robot to infected locations
                     mask  = (dists <= self.infected_radius) & (self.infected_levels > 0)    # Only affect nearby infected locations
+
                     if np.any(mask):                                                                # If nearby infected locations exists
                         w = np.exp(-(dists[mask] ** 2) / (2 * self.spray_sigma ** 2))               # Gaussian decay: closer points get more spray effect
-                        spray_effect = spray_used * w                                               # Scale spray intensity by distance weighting
+                        spray_effect = spray * w                                                    # Scale spray intensity by distance weighting
                         spray_effect += self.np_random.normal(0, self.spray_noise_std, size=w.shape)     # Add stochasticity to spraying process
                         spray_effect  = np.clip(spray_effect, 0, None)                              # Prevent negative spray
                         applied       = np.minimum(spray_effect, self.infected_levels[mask])        # Cannot disinfect more infection than exists
                         total         = np.sum(applied)                                             # Total spray to apply
-                        if total > spray_used:                                      # If exceeding consumed spray
-                            applied *= spray_used / (total + 1e-8)                  # Scale down proportionally
-                            total    = spray_used                                   # Total spray applied by this robot in this step
+                        if total > self.robot_capacities[i]:                        # If exceeding available spray capacity
+                            applied *= self.robot_capacities[i] / (total + 1e-8)    # Scale down proportionally
+                            total    = self.robot_capacities[i]                     # Total spray applied by this robot in this step
+                        self.robot_capacities[i]    -= total                        # Reduce sprayed amount from capacity
                         self.infected_levels[mask]  -= applied                      # Reduce infection levels by applied spray amount
                         total_sprayed               += total                        # Accumulate global spraying amount for all robots
-                        step_sprayed_i               = float(total)
-                    step_wasted_i = max(0.0, spray_used - step_sprayed_i)
-
-            if self.reward_ablation != "no_eff":
-                reward -= 0.05 * step_wasted_i
-                # reward -= 0.05 * empty_capacity_spray_i
+                        step_spray_applied_i         = float(total)
+                    else:
+                        # Useless spray penalty (part of R_eff)
+                        if self.reward_ablation != "no_spr":
+                            reward -= 0.05 * spray
+                    step_spray_wasted_i = max(0.0, step_spray_used_i - step_spray_applied_i)
 
             # Apply velocity damping (friction) after movement
             self.robot_velocities[i] *= self.velocity_damping
 
             # Update spray history for this robot
-            self.episode_spray_used += spray_used
-            self.episode_spray_applied += step_sprayed_i
-            self.episode_spray_wasted += step_wasted_i
+            self.episode_spray_used += step_spray_used_i
+            self.episode_spray_applied += step_spray_applied_i
+            self.episode_spray_wasted += step_spray_wasted_i
             self.episode_spray_empty_capacity += empty_capacity_spray_i
-            self.spray_history[i] += step_sprayed_i
 
-            # ── R_eff: per-robot efficiency penalties ─────────────────
-            if self.reward_ablation != "no_eff":
+            # ── Per-robot movement penalties ─────────────────
+            if self.reward_ablation != "no_path":
                 reward -= 0.1 * (ax ** 2 + ay ** 2)                       # Energy penalty (encourages efficient control)
                 reward -= 0.3 * np.linalg.norm(self.robot_velocities[i])  # Movement penalty (Penalize high speeds)
 
@@ -441,60 +392,57 @@ class MultiRobotEnv(gym.Env):
         self.prev_positions = self.robot_positions.copy()                                # Update previous positions
 
         # ── R_spray: core spraying reward ────────────────────────────
-        reward += 100.0 * total_sprayed     # Strong positive reward for removing infection
+        if self.reward_ablation != "no_spr":
+            reward += 100.0 * total_sprayed     # Strong positive reward for removing infection
 
         # ── R_eff: global efficiency penalties ───────────────────────
-        if self.reward_ablation != "no_eff":
+        if self.reward_ablation != "no_path":
             reward -= 1.0 * step_path       # path length penalty
             reward -= 2.0                   # time penalty
 
-        # ── R_cov: coverage-shaping terms ────────────────────────────
         # Remaining infection penalty
         remaining = np.sum(self.infected_levels)
-        if self.reward_ablation != "no_cov":
+        if self.reward_ablation != "no_spr":
             # Distance shaping to nearest active infection
-            active_mask = self.infected_levels > 0
+            active_mask = self.infected_levels > 0.01
             if np.any(active_mask):
                 active_pos = self.infected_positions[active_mask]
                 dists_mat  = np.linalg.norm(
                     self.robot_positions[:, None] - active_pos[None, :], axis=2)
                 nearest    = np.min(dists_mat, axis=1)
-                reward    += 0.5 * np.sum(np.exp(-nearest))
-            
+                reward    += 0.5 * np.sum(np.exp(-nearest))            
             reward -= 0.5 * remaining
-            if remaining <= 0.01:
-                reward    += 500.0      # Large positive reward for successfull spraying
-                terminated = True
-                self.episode_success = True
-        else:
-            # Still need to detect success so the episode can end
-            if remaining <= 0.01:
-                terminated = True
-                self.episode_success = True
 
-        # ── R_col: collision penalty / termination ────────────────────
+        term_cond = ""               # Terminal conditions for the reward ablation
+        if remaining <= 0.01:
+            if self.reward_ablation != "no_term":
+                reward += 500.0      # Large positive reward for successfull spraying
+            term_cond = "sprayed"   
+            terminated = True        # always terminate on succession (completion)
+
+        # ── R_col: collision penalty ──────────────────────────────────
         if self.num_robots > 1:                                             # Check collision only for multi-robots
             if compute_min_dist(self.robot_positions) < self.robot_size:    # Robots too close
-                self.episode_collision_occurred = True
-                if self.reward_ablation != "no_col":
+                if self.reward_ablation != "no_term":
                     reward -= 1000.0                                        # Large negative reward for collision
-                    terminated = True
+                term_cond = "collision"
+                terminated = True   # always terminate on collision (safety)
 
         # ── Build observation & info ──────────────────────────────────
         obs, info = self._get_obs()
+        truncated = self.step_count >= self.max_steps       # Episode ends if max steps reached
+        if truncated:
+            term_cond = "max_steps"
         info.update({
             "total_sprayed": float(total_sprayed),          # Total infection removed this step
             "remaining_infection": float(remaining),        # Remaining infected amount
             "episode_length": self.step_count,              # Current timestep
-            "path_length": float(self.total_path_length)    # Total distance traveled
+            "path_length": float(self.total_path_length),   # Total distance traveled
+            "term_cond": term_cond
         })
-        truncated = self.step_count >= self.max_steps       # Episode ends if max steps reached
 
-        # Ensure episode metrics are present at any episode end.
-        if truncated:
-            self.episode_time_limit_reached = True
         if terminated or truncated:
-            info['episode_metrics'] = self._get_episode_metrics()
+            info['episode_metrics'] = self._get_episode_metrics(term_cond)
         return obs, reward, terminated, truncated, info
 
     # ── render ───────────────────────────────────────────────────────
@@ -556,7 +504,15 @@ class MultiRobotEnv(gym.Env):
         self.episode_collision_occurred = False
         self.episode_success = False
 
-    def _get_episode_metrics(self):
+    def _get_episode_metrics(self, term_cond):
+        if term_cond == "collision":
+            self.episode_collision_occurred = True
+        elif term_cond == "sprayed":
+            self.episode_success = True
+        elif term_cond == "max_steps":
+            self.episode_time_limit_reached = True
+        else:
+            pass # This should not happen
         if self.episode_spray_used > 0:
             self.episode_wasted_fraction = float(
                 np.clip(self.episode_spray_wasted / self.episode_spray_used, 0.0, 1.0)

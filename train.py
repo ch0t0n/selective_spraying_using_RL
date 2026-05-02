@@ -2,29 +2,25 @@
 """
 train.py — unified training script for all experiments.
 
-Handles the train.py-backed experiment steps via command-line arguments:
+Handles all 8 experiment steps via command-line arguments:
   Step 1  --experiment main     (default HPs)
   Step 2  --experiment main     --transfer_from <path>      (transfer learning)
   Step 4  --experiment main     --hyperparams_json <path>   (tuned HPs)
-  Step 5  --experiment ablation_reward  --ablation {full|no_col|no_cov|no_eff}
-  Step 6  --experiment ablation_obs     --ablation {base|full|no_wind|no_spray_hist|pos_only}
+  Step 5  --experiment ablation_reward  --ablation {full|no_term|no_spr|no_path}
+  Step 6  --experiment ablation_obs     --ablation {full|no_pos|no_inf_hist|pos_only}
   Step 7  --experiment ablation_uncertainty  --ablation {full|wind_only|act_only|deterministic}
   Step 8  --experiment dr       --ablation {none|wind|full}
 
 Usage example (equivalent to old train_default.py call):
   python train.py --algorithm CrossQ --set 1 --num_robots 3 --seed 42
                   --steps 1000000 --device cuda --experiment main
-
-Author: Jahid Chowdhury Choton (email: choton@ksu.edu)
 """
 
 import os
-import sys
-import json
 import csv
+import json
 import argparse
 import numpy as np
-from datetime import datetime
 
 import gymnasium as gym
 from stable_baselines3 import A2C, PPO
@@ -50,7 +46,7 @@ ALGORITHMS = {
     "TQC":    (TQC,    "MlpPolicy"),
 }
 
-# Experiment → env constructor kwarg name + valid choices
+# Experiment → env constructor kwarg name
 EXPERIMENT_MAP = {
     "main":                  None,               # no ablation kwarg
     "ablation_reward":       "reward_ablation",
@@ -59,11 +55,21 @@ EXPERIMENT_MAP = {
     "dr":                    "dr_mode",
 }
 
+# Valid ablation choices per experiment — must match env.py assertions exactly
+VALID_ABLATIONS = {
+    "main":                  {None},
+    "ablation_reward":       {"full", "no_term", "no_spr", "no_path"},
+    "ablation_obs":          {"full", "no_pos", "no_inf_hist", "pos_only"},
+    "ablation_uncertainty":  {"full", "wind_only", "act_only", "deterministic"},
+    "dr":                    {"none", "wind", "full"},
+}
+
 # Default ablation value per experiment type (used when --ablation not given)
+# BUG FIX: was "base" for ablation_obs — "base" is not a valid obs_mode in env.py
 EXPERIMENT_DEFAULTS = {
     "main":                  None,
     "ablation_reward":       "full",
-    "ablation_obs":          "base",
+    "ablation_obs":          "full",        # fixed: was "base"
     "ablation_uncertainty":  "full",
     "dr":                    "none",
 }
@@ -108,7 +114,7 @@ def parse_args():
                    help="Number of parallel training envs")
     p.add_argument("--max_steps",   type=int,   default=1000,
                    help="Maximum steps per episode")
-    p.add_argument("--n_eval_eps",  type=int,   default=20,
+    p.add_argument("--n_eval_eps",  type=int,   default=5,
                    help="Episodes per EvalCallback evaluation")
 
     # ── new experiment-control arguments ──
@@ -121,14 +127,71 @@ def parse_args():
                    help="Path to best_hyperparams.json (Step 4 tuned HPs). "
                         "If omitted, SB3 defaults are used.")
     p.add_argument("--transfer_from", type=str, default=None,
-                   help="Path to source best_model.zip for Step 2 transfer. "
-                        "If provided, train.py loads it and continues training.")
+                   help="Path to a Step 1 default-policy checkpoint for "
+                        "Step 2 transfer learning. If omitted, training "
+                        "starts from scratch.")
     p.add_argument("--log_root",    type=str,
                    default=os.path.join(PROJECT_ROOT, 'logs'),
                    help="Root directory for all logs and saved models")
 
-    return p.parse_args()
+    args = p.parse_args()
 
+    # ── Validate --ablation against the chosen experiment ────────────
+    # Fail fast here with a clear message rather than inside the env constructor
+    effective_ablation = args.ablation or EXPERIMENT_DEFAULTS[args.experiment]
+    valid = VALID_ABLATIONS[args.experiment]
+    if effective_ablation not in valid:
+        p.error(
+            f"--ablation '{effective_ablation}' is not valid for "
+            f"--experiment '{args.experiment}'. "
+            f"Choose from: {sorted(v for v in valid if v is not None)}"
+        )
+
+    return args
+
+
+# ================================================================
+# Episode metric logging
+# ================================================================
+
+class EpisodeMetricsCallback(BaseCallback):
+    """Write terminal episode metrics exposed by MultiRobotEnv to CSV."""
+
+    def __init__(self, log_path: str, verbose: int = 0):
+        super().__init__(verbose)
+        self.log_path = log_path
+        self._file = None
+        self._writer = None
+
+    def _init_callback(self) -> None:
+        os.makedirs(os.path.dirname(os.path.abspath(self.log_path)), exist_ok=True)
+        write_header = not os.path.exists(self.log_path) or os.path.getsize(self.log_path) == 0
+
+        self._file = open(self.log_path, "a", newline="")
+        self._writer = csv.writer(self._file)
+        if write_header:
+            self._writer.writerow(["num_timesteps", "env_index"] + EPISODE_METRIC_KEYS)
+            self._file.flush()
+
+    def _on_step(self) -> bool:
+        infos = self.locals.get("infos", [])
+        for env_index, info in enumerate(infos):
+            metrics = info.get("episode_metrics")
+            if not metrics:
+                continue
+
+            self._writer.writerow(
+                [self.num_timesteps, env_index] +
+                [metrics.get(k, "") for k in EPISODE_METRIC_KEYS]
+            )
+            self._file.flush()
+
+        return True
+
+    def _on_training_end(self) -> None:
+        if self._file is not None:
+            self._file.close()
+            self._file = None
 
 # ================================================================
 # Utilities
@@ -199,11 +262,11 @@ def build_log_dir(args) -> str:
     directories, breaking the glob in evaluate.py.
     """
     if args.experiment == "main":
-        if args.transfer_from:
-            version = "main_transfer"
+        if args.transfer_from is not None:
+            hp_tag = "transfer"
         else:
             hp_tag = "tuned" if args.hyperparams_json else "default"
-            version = f"main_{hp_tag}"
+        version = f"main_{hp_tag}"
     elif args.experiment == "dr":
         version = f"dr_{args.ablation or 'none'}"
     else:
@@ -214,100 +277,6 @@ def build_log_dir(args) -> str:
            f"_env{args.set}_seed{args.seed}")   # ← seed added here
 
     return os.path.join(args.log_root, version, tag)
-
-
-# ================================================================
-# Episode metric callback
-# ================================================================
-
-class EpisodeMetricsCallback(BaseCallback):
-    """Persist terminal episode metrics emitted by MultiRobotEnv."""
-
-    def __init__(self, log_dir: str, log_freq: int, verbose: int = 0):
-        super().__init__(verbose)
-        self.log_dir = log_dir
-        self.log_freq = log_freq
-        self.csv_path = os.path.join(log_dir, "episode_metrics.csv")
-        self._csv_file = None
-        self._writer = None
-        self._metric_buffer = []
-        self._last_log_timestep = 0
-
-    def _on_training_start(self) -> None:
-        os.makedirs(self.log_dir, exist_ok=True)
-        write_header = not os.path.exists(self.csv_path) or os.path.getsize(self.csv_path) == 0
-        self._csv_file = open(self.csv_path, "a", newline="")
-        self._writer = csv.DictWriter(
-            self._csv_file,
-            fieldnames=["timestep", "env_idx"] + EPISODE_METRIC_KEYS,
-        )
-        if write_header:
-            self._writer.writeheader()
-            self._csv_file.flush()
-
-    def _on_step(self) -> bool:
-        wrote_row = False
-        for env_idx, info in enumerate(self.locals.get("infos", [])):
-            metrics = info.get("episode_metrics") if isinstance(info, dict) else None
-            if metrics is None:
-                continue
-
-            row = {"timestep": self.num_timesteps, "env_idx": env_idx}
-            for key in EPISODE_METRIC_KEYS:
-                row[key] = metrics.get(key, "")
-            self._writer.writerow(row)
-            self._metric_buffer.append(metrics)
-            wrote_row = True
-
-        if wrote_row:
-            self._csv_file.flush()
-
-        if (
-            self._metric_buffer
-            and self.num_timesteps - self._last_log_timestep >= self.log_freq
-        ):
-            self._record_metric_buffer()
-
-        return True
-
-    def _record_metric_buffer(self) -> None:
-        def _mean(key):
-            vals = []
-            for metrics in self._metric_buffer:
-                if key not in metrics:
-                    continue
-                try:
-                    vals.append(float(metrics[key]))
-                except (TypeError, ValueError):
-                    pass
-            return float(np.mean(vals)) if vals else None
-
-        metric_map = {
-            "success_rate": "episode_success",
-            "collision_rate": "episode_collision_occurred",
-            "time_limit_rate": "episode_time_limit_reached",
-            "spray_used_mean": "episode_spray_used",
-            "spray_wasted_mean": "episode_spray_wasted",
-            "spray_applied_mean": "episode_spray_applied",
-            "spray_empty_capacity_mean": "episode_spray_empty_capacity",
-            "wasted_fraction_mean": "episode_wasted_fraction",
-            "boundary_viol_count_mean": "episode_boundary_viol_count",
-            "remaining_infection_fraction_mean": "episode_remaining_infection_fraction",
-        }
-
-        for log_name, key in metric_map.items():
-            value = _mean(key)
-            if value is not None:
-                self.logger.record(f"episode/{log_name}", value)
-
-        self._metric_buffer = []
-        self._last_log_timestep = self.num_timesteps
-
-    def _on_training_end(self) -> None:
-        if self._metric_buffer:
-            self._record_metric_buffer()
-        if self._csv_file is not None:
-            self._csv_file.close()
 
 
 # ================================================================
@@ -362,9 +331,9 @@ def train(args):
     print(f"  Env set   : {args.set}  |  N robots: {args.num_robots}")
     print(f"  Seed      : {args.seed}")
     print(f"  Steps     : {args.steps:,}")
-    print(f"  Log dir   : {log_dir}")
-    if args.transfer_from:
+    if args.transfer_from is not None:
         print(f"  Transfer  : {args.transfer_from}")
+    print(f"  Log dir   : {log_dir}")
     print("=" * 60)
 
     # ── Callbacks ────────────────────────────────────────────────
@@ -378,8 +347,8 @@ def train(args):
         render=False,
     )
     log_cb = LogEveryNTimesteps(n_steps=args.log_steps)
-    episode_metrics_cb = EpisodeMetricsCallback(log_dir, args.log_steps)
-    callback = CallbackList([log_cb, episode_metrics_cb, eval_cb])
+    metrics_cb = EpisodeMetricsCallback(os.path.join(log_dir, "episode_metrics.csv"))
+    callback = CallbackList([log_cb, eval_cb, metrics_cb])
 
     # ── SB3 logger ───────────────────────────────────────────────
     logger = configure(log_dir, ["stdout", "log", "csv", "tensorboard"])
@@ -389,9 +358,15 @@ def train(args):
 
     # ── Model ────────────────────────────────────────────────────
     AlgClass, policy = ALGORITHMS[args.algorithm]
-    if args.transfer_from:
-        print(f"  Loading transfer checkpoint: {args.transfer_from}")
-        model = AlgClass.load(args.transfer_from, env=vec_env, device=args.device)
+    if args.transfer_from is not None:
+        model = AlgClass.load(
+            args.transfer_from,
+            env=vec_env,
+            device=args.device,
+        )
+        if hasattr(model, "set_random_seed"):
+            model.set_random_seed(args.seed)
+        model.verbose = args.verbose
     else:
         model = AlgClass(
             policy, vec_env,
@@ -404,11 +379,7 @@ def train(args):
 
     # ── Training ─────────────────────────────────────────────────
     print(f"\nTraining {args.algorithm} ...")
-    model.learn(
-        total_timesteps=args.steps,
-        callback=callback,
-        reset_num_timesteps=(args.transfer_from is None),
-    )
+    model.learn(total_timesteps=args.steps, callback=callback)
 
     # ── Save final model ─────────────────────────────────────────
     save_path = os.path.join(

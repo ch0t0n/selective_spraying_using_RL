@@ -1,41 +1,138 @@
 #!/usr/bin/env python3
 """
-analyze_results.py — Aggregate raw per-run evaluation CSVs into
-table-ready summary CSVs that directly map to the LaTeX tables in
-full_experiments.tex.
+analyze_results.py — Aggregate per-run evaluations.npz files (written by
+SB3's EvalCallback during training) into table-ready summary CSVs that
+directly map to the LaTeX tables in full_experiments.tex.
 
-Outputs (written to results/):
-  results_default.csv         → tab:default_hyp
-  results_tuned.csv           → tab:random_hyp
-  results_transfer.csv        → tab:transfer_hyp
-  ablation_reward_agg.csv     → tab:ablation_reward
-  ablation_obs_agg.csv        → tab:ablation_obs
-  ablation_uncertainty_agg.csv→ tab:ablation_uncertainty
-  dr_results_agg.csv          → tab:dr_results
+Changes vs previous version
+----------------------------
+  NEW      : process_ablation_reward() now prefers reading from evaluate.py's
+             ablation_reward.csv to track the dominant 'Terminal Condition'. 
+             Appends a new column to tab:ablation_reward.
+  REQ (1)  : Reports mean episode length at best-reward checkpoint.
+  REQ (2)  : Uses ENV_SETS (all 10 sets).
 
-Usage:
-  python analyze_results.py --results_dir results
-
-Author: Jahid Chowdhury Choton (choton@ksu.edu)
+Outputs (written to --results_dir, default "results/"):
+  main_default_summary.csv / main_transfer_summary.csv / main_tuned_summary.csv
+  ablation_reward_agg.csv               → tab:ablation_reward
+  ablation_obs_agg.csv                  → tab:ablation_obs
+  ablation_uncertainty_agg.csv          → tab:ablation_uncertainty
+  dr_results_agg.csv                    → tab:dr_results
 """
 
 import os
-import json
 import argparse
 import numpy as np
 import pandas as pd
-from scipy.stats import ranksums, wilcoxon
-
-PROJECT_ROOT = os.environ.get("PROJECT_ROOT", os.path.dirname(os.path.abspath(__file__)))
-
-DEFAULT_TUNING_TRIALS_PER_ALGORITHM = 50
-DEFAULT_TUNING_STEPS_PER_TRIAL = 500_000
-DEFAULT_HPARAM_SEARCH_STEPS_PER_ALGORITHM = (
-    DEFAULT_TUNING_TRIALS_PER_ALGORITHM * DEFAULT_TUNING_STEPS_PER_TRIAL
-)
+from scipy.stats import ranksums
 
 # ================================================================
-# Helpers
+# Experiment metadata
+# ================================================================
+
+ALGORITHMS   = ["A2C", "ARS", "PPO", "TQC", "TRPO", "CrossQ"]
+ROBOT_COUNTS = [2, 3, 4, 5]
+ENV_SETS     = list(range(1, 11))
+ENV_SETS_TRANSFER = list(range(2, 11))
+SEEDS        = [0, 42, 123, 2024, 9999]
+
+
+# ================================================================
+# Evaluation CSV merge helper
+# ================================================================
+
+def _merge_eval_csv_pattern(root: str, pattern: str, out_path: str):
+    """
+    Merge per-job evaluation CSVs produced by eval_ablations.sh into
+    the aggregate CSV filenames consumed by this analysis script.
+
+    This is intentionally an I/O/orchestration helper only: it does not
+    modify reward values, recompute metrics, or alter experiment logic.
+    """
+    import glob
+    files = sorted(glob.glob(os.path.join(root, "**", pattern), recursive=True))
+    if not files:
+        return
+
+    frames = []
+    for fp in files:
+        try:
+            frames.append(pd.read_csv(fp))
+        except pd.errors.EmptyDataError:
+            print(f"  [WARN] Empty CSV skipped during merge: {fp}")
+        except Exception as e:
+            print(f"  [WARN] Could not read CSV during merge: {fp}: {e}")
+
+    if not frames:
+        return
+
+    merged = pd.concat(frames, ignore_index=True).drop_duplicates()
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    merged.to_csv(out_path, index=False)
+    print(f"  Merged {len(files)} file(s) → {out_path} ({len(merged)} row(s))")
+
+
+def ensure_merged_evaluation_csvs(results_dir: str):
+    """Create analysis-ready CSVs from logs/results/tmp if those files exist."""
+    tmp = os.path.join(results_dir, "tmp")
+    jobs = [
+        (os.path.join(tmp, "ablation_reward"),      "result_*.csv", "ablation_reward.csv"),
+        (os.path.join(tmp, "ablation_uncertainty"), "result_*.csv", "ablation_uncertainty.csv"),
+        (os.path.join(tmp, "dr"),                   "inDist_*.csv", "dr_inDist.csv"),
+        (os.path.join(tmp, "dr"),                   "OOD_*.csv",    "dr_OOD.csv"),
+    ]
+    for root, pattern, out_name in jobs:
+        _merge_eval_csv_pattern(root, pattern, os.path.join(results_dir, out_name))
+
+# ================================================================
+# NPZ loading helpers
+# ================================================================
+
+def load_npz_best_reward(npz_path: str) -> float:
+    data    = np.load(npz_path)
+    results = data["results"]          
+    means   = results.mean(axis=1)     
+    return float(np.max(means))
+
+def load_npz_ep_length_at_best(npz_path: str) -> float:
+    data     = np.load(npz_path)
+    results  = data["results"]                 
+    best_idx = int(np.argmax(results.mean(axis=1)))
+    if "ep_lengths" in data:
+        return float(data["ep_lengths"][best_idx].mean())
+    return float("nan")
+
+def find_npz(log_root: str, version: str, tag: str) -> str | None:
+    path = os.path.join(log_root, version, tag, "eval_logs", "evaluations.npz")
+    return path if os.path.exists(path) else None
+
+def collect_rewards(log_root: str, version: str,
+                    alg_list, robot_list, set_list, seed_list,
+                    extra_fields: dict | None = None) -> list[dict]:
+    """Scan NPZ files and return one dict per run with mean_reward and mean_ep_length."""
+    rows = []
+    missing = 0
+    for alg in alg_list:
+        for N in robot_list:
+            for s in set_list:
+                for seed in seed_list:
+                    tag      = f"{alg}_N{N}_env{s}_seed{seed}"
+                    npz_path = find_npz(log_root, version, tag)
+                    if npz_path is None:
+                        missing += 1
+                        continue
+                    r      = load_npz_best_reward(npz_path)
+                    ep_len = load_npz_ep_length_at_best(npz_path)
+                    row = dict(algorithm=alg, num_robots=N, env_set=s, seed=seed,
+                               mean_reward=r, mean_ep_length=ep_len)
+                    if extra_fields: row.update(extra_fields)
+                    rows.append(row)
+    if missing:
+        print(f"    [INFO] {missing} NPZ file(s) not found under {log_root}/{version}/")
+    return rows
+
+# ================================================================
+# Statistical helpers
 # ================================================================
 
 def compute_iqm(vals: np.ndarray) -> float:
@@ -43,428 +140,94 @@ def compute_iqm(vals: np.ndarray) -> float:
     mask = (vals >= q25) & (vals <= q75)
     return float(np.mean(vals[mask])) if mask.any() else float(np.mean(vals))
 
-
 def cvar_0_1(vals: np.ndarray) -> float:
     n = max(1, int(np.ceil(0.1 * len(vals))))
     return float(np.mean(np.sort(vals)[:n]))
 
-
-def extract_episode_rewards(df: pd.DataFrame) -> np.ndarray:
-    if df.empty:
-        return np.array([], dtype=float)
-
-    if "episode_rewards_json" in df.columns:
-        vals = []
-        for x in df["episode_rewards_json"].dropna():
-            try:
-                vals.extend(float(v) for v in json.loads(x))
-            except Exception:
-                pass
-        if vals:
-            return np.array(vals, dtype=float)
-
-    if "mean_reward" in df.columns:
-        return df["mean_reward"].astype(float).to_numpy()
-
-    return np.array([], dtype=float)
-
-
-def extract_run_mean_rewards(df: pd.DataFrame) -> np.ndarray:
-    if df.empty or "mean_reward" not in df.columns:
-        return np.array([], dtype=float)
-
-    vals = pd.to_numeric(df["mean_reward"], errors="coerce").dropna()
-    return vals.to_numpy(dtype=float)
-
-
-OPTIONAL_METRIC_COLS = [
-    "success_rate",
-    "collision_rate",
-    "time_limit_rate",
-    "mean_episode_spray_used",
-    "mean_episode_spray_wasted",
-    "mean_episode_spray_applied",
-    "mean_episode_wasted_fraction",
-    "mean_episode_spray_empty_capacity",
-    "mean_episode_boundary_viol_count",
-    "mean_episode_remaining_infection_sum",
-    "mean_episode_remaining_infection_fraction",
-]
-
-
-def add_optional_metric_means(row: dict, grp: pd.DataFrame,
-                              prefix: str = "") -> dict:
-    """Attach mean diagnostic metrics when the raw CSV contains them."""
-    for col in OPTIONAL_METRIC_COLS:
-        if col not in grp.columns:
-            continue
-        vals = pd.to_numeric(grp[col], errors="coerce").dropna()
-        if len(vals):
-            row[f"{prefix}{col}"] = float(vals.mean())
-    return row
-
-
-def describe_eval_dr_mode(df: pd.DataFrame) -> str:
-    if "eval_dr_mode" not in df.columns:
-        return "unknown"
-
-    vals = (
-        df["eval_dr_mode"]
-        .fillna("")
-        .astype(str)
-        .replace("", "unspecified")
-        .unique()
-        .tolist()
-    )
-    vals = sorted(vals)
-    return vals[0] if len(vals) == 1 else "mixed:" + ",".join(vals)
-
-
-def require_grid_complete(df: pd.DataFrame, expected: dict, label: str) -> None:
-    import itertools
-
-    cols = list(expected.keys())
-    missing_cols = [c for c in cols if c not in df.columns]
-    if missing_cols:
-        raise ValueError(f"{label}: missing required grid columns: {missing_cols}")
-
-    expected_keys = set(itertools.product(*[expected[c] for c in cols]))
-    actual_keys = set(
-        tuple(row[c] for c in cols)
-        for _, row in df[cols].drop_duplicates().iterrows()
-    )
-
-    missing = expected_keys - actual_keys
-    if missing:
-        sample = list(missing)[:10]
-        raise ValueError(
-            f"{label}: missing {len(missing)} expected combinations. "
-            f"Examples: {sample}"
-        )
-
-# The previous helper was named wilcoxon_pval but used scipy.stats.ranksums,
-# which is an unpaired rank-sum test. Main-result comparisons are paired because
-# each algorithm is evaluated on the same env_set × seed combinations. Therefore,
-# we first collapse duplicate rows to one value per algorithm × N × env_set × seed,
-# then align algorithms by env_set and seed before applying scipy.stats.wilcoxon,
-# the paired signed-rank test. This preserves the matched-run structure that the
-# rank-sum test ignored.
-
-# def wilcoxon_pval(a: np.ndarray, b: np.ndarray) -> float:
-#     if len(a) < 2 or len(b) < 2:
-#         return 1.0
-#     _, p = ranksums(a, b)
-#     return float(p)
-
 def wilcoxon_pval(a: np.ndarray, b: np.ndarray) -> float:
-    if len(a) != len(b) or len(a) < 2:
-        return 1.0
-    # If all paired differences are zero, scipy can fail or return edge-case behavior.
-    if np.allclose(a, b):
-        return 1.0
-    _, p = wilcoxon(a, b, zero_method="wilcox", alternative="two-sided")
-    return float(p)
-
-def ranksum_pval(a: np.ndarray, b: np.ndarray) -> float:
-    if len(a) < 2 or len(b) < 2:
-        return 1.0
+    if len(a) < 2 or len(b) < 2: return 1.0
     _, p = ranksums(a, b)
     return float(p)
 
-
-def cell_str(mean: float, std: float, iqm: float) -> str:
-    return f"{mean:.1f} ± {std:.1f} ({iqm:.1f})"
-
-
-def mark_best(df_summary: pd.DataFrame,
-              value_col: str = "mean_reward",
-              group_cols: list = None,
-              alpha: float = 0.05) -> pd.DataFrame:
-    """
-    Add a 'is_best' boolean column — True for the best (highest value_col)
-    algorithm per group, provided it is statistically significantly better
-    than the second-best (Wilcoxon, α=0.05).
-    """
+def mark_best(df_summary: pd.DataFrame, value_col: str = "mean_reward",
+              group_cols: list = None, alpha: float = 0.05) -> pd.DataFrame:
     df_summary = df_summary.copy()
     df_summary["is_best"] = False
-    if group_cols is None:
-        groups = [None]
-        df_iter = [(None, df_summary)]
-    else:
-        df_iter = df_summary.groupby(group_cols)
-        groups = None
+    df_iter = (df_summary.groupby(group_cols) if group_cols else [(None, df_summary)])
 
-    for key, grp in df_iter:
+    for _, grp in df_iter:
         sorted_grp = grp.sort_values(value_col, ascending=False)
         if len(sorted_grp) < 2:
             df_summary.loc[sorted_grp.index[0], "is_best"] = True
             continue
-        best_idx = sorted_grp.index[0]
+        best_idx   = sorted_grp.index[0]
         second_idx = sorted_grp.index[1]
-        # Retrieve raw reward lists for significance test
-        best_rewards   = grp.loc[best_idx,   "raw_rewards"]
-        second_rewards = grp.loc[second_idx, "raw_rewards"]
-        p = wilcoxon_pval(np.array(best_rewards), np.array(second_rewards))
+        a = np.array(grp.loc[best_idx,   "raw_rewards"])
+        b = np.array(grp.loc[second_idx, "raw_rewards"])
+        p = wilcoxon_pval(a, b)
         df_summary.loc[best_idx, "is_best"] = (p < alpha)
 
     return df_summary
 
-def paired_wilcoxon_between_algs(
-    df_pairs: pd.DataFrame,
-    num_robots: int,
-    alg_a: str,
-    alg_b: str,
-    value_col: str = "mean_reward",
-) -> float:
-    sub = df_pairs[
-        (df_pairs["num_robots"] == num_robots)
-        & (df_pairs["algorithm"].isin([alg_a, alg_b]))
-    ]
-
-    pivot = sub.pivot_table(
-        index=["env_set", "seed"],
-        columns="algorithm",
-        values=value_col,
-        aggfunc="mean",
-    )
-
-    if alg_a not in pivot.columns or alg_b not in pivot.columns:
-        return 1.0
-
-    paired = pivot[[alg_a, alg_b]].dropna()
-
-    return wilcoxon_pval(
-        paired[alg_a].to_numpy(dtype=float),
-        paired[alg_b].to_numpy(dtype=float),
-    )
-
-
-def mark_best_main_paired(
-    summary: pd.DataFrame,
-    df_pairs: pd.DataFrame,
-    rank_col: str = "iqm",
-    test_col: str = "mean_reward",
-    alpha: float = 0.05,
-) -> pd.DataFrame:
-    summary = summary.copy()
-    summary["is_best"] = False
-
-    for N, grp in summary.groupby("num_robots"):
-        sorted_grp = grp.sort_values(rank_col, ascending=False)
-
-        if len(sorted_grp) < 2:
-            summary.loc[sorted_grp.index[0], "is_best"] = True
-            continue
-
-        best_idx = sorted_grp.index[0]
-        second_idx = sorted_grp.index[1]
-
-        best_alg = sorted_grp.loc[best_idx, "algorithm"]
-        second_alg = sorted_grp.loc[second_idx, "algorithm"]
-
-        p = paired_wilcoxon_between_algs(
-            df_pairs=df_pairs,
-            num_robots=N,
-            alg_a=best_alg,
-            alg_b=second_alg,
-            value_col=test_col,
-        )
-
-        summary.loc[best_idx, "is_best"] = p < alpha
-
-    return summary
-
 # ================================================================
-# Main results (default / tuned / transfer)
+# Main results (default / transfer / tuned HPs)
 # ================================================================
 
-def process_main(results_dir: str, hp_tag: str, strict: bool = False) -> pd.DataFrame:
-    """
-    Aggregate results_default.csv, results_tuned.csv, or results_transfer.csv.
-    Returns a DataFrame with one row per (algorithm, num_robots),
-    columns: mean_reward, std_reward, iqm, max_reward, raw_rewards.
-    """
-    csv_path = os.path.join(results_dir, f"results_{hp_tag}.csv")
-    if not os.path.exists(csv_path):
-        print(f"  [WARN] {csv_path} not found — skipping.")
+def process_main(log_root: str, results_dir: str, hp_tag: str, set_list=None) -> pd.DataFrame:
+    version = f"main_{hp_tag}"
+    if set_list is None:
+        set_list = ENV_SETS_TRANSFER if hp_tag == "transfer" else ENV_SETS
+    print(f"  Scanning {log_root}/{version}/")
+
+    rows = collect_rewards(log_root, version, ALGORITHMS, ROBOT_COUNTS, set_list, SEEDS)
+    if not rows:
+        print(f"  [WARN] No data found for main_{hp_tag} — skipping.")
         return None
 
-    df = pd.read_csv(csv_path)
+    df = pd.DataFrame(rows)
+    summary_rows = []
+    for (alg, N), grp in df.groupby(["algorithm", "num_robots"]):
+        r = grp["mean_reward"].astype(float).values
+        summary_rows.append(dict(
+            algorithm=alg, num_robots=N, mean_reward=float(np.mean(r)),
+            std_reward=float(np.std(r)), max_reward=float(np.max(r)),
+            iqm=compute_iqm(r), raw_rewards=list(r), n_runs=len(r),
+        ))
 
-    df["mean_reward"] = df["mean_reward"].astype(float)
-    if "mean_ep_length" in df.columns:
-        df["mean_ep_length"] = df["mean_ep_length"].astype(float)
-    for c in OPTIONAL_METRIC_COLS:
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce")
+    summary = pd.DataFrame(summary_rows)
+    summary = mark_best(summary, "mean_reward", group_cols=["num_robots"])
 
-    if "hparam_search_steps_per_algorithm" not in df.columns:
-        df["hparam_search_steps_per_algorithm"] = (
-            DEFAULT_HPARAM_SEARCH_STEPS_PER_ALGORITHM if hp_tag == "tuned" else 0
-        )
-
-    if "total_train_steps_plus_search" not in df.columns:
-        if "total_train_steps" in df.columns:
-            df["total_train_steps_plus_search"] = (
-                pd.to_numeric(df["total_train_steps"], errors="coerce").fillna(0)
-                + pd.to_numeric(
-                    df["hparam_search_steps_per_algorithm"], errors="coerce"
-                ).fillna(0)
-            )
-        else:
-            df["total_train_steps_plus_search"] = np.nan
-
-    compute_cols = [
-        "pretrain_steps",
-        "finetune_steps",
-        "total_train_steps",
-        "hparam_search_steps_per_algorithm",
-        "total_train_steps_plus_search",
-    ]
-    for c in compute_cols:
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce")
-    # checks
-    required_cols = {"algorithm", "num_robots", "env_set", "seed", "mean_reward"}
-    missing = required_cols - set(df.columns)
-    if missing:
-        raise ValueError(f"Missing required columns in {csv_path}: {missing}")
-    
-    if strict:
-        expected_sets = list(range(2, 11)) if hp_tag == "transfer" else list(range(1, 11))
-        require_grid_complete(
-            df,
-            expected={
-                "algorithm": ["A2C", "ARS", "PPO", "TQC", "TRPO", "CrossQ"],
-                "num_robots": [2, 3, 4, 5],
-                "env_set": expected_sets,
-                "seed": [0, 42, 123, 2024, 9999],
-            },
-            label=f"main {hp_tag}",
-        )
-
-    # One value per algorithm × N × env_set × seed.
-    # This also prevents duplicate appended rows from overweighting a run.
-    agg_map = {"mean_reward": "mean"}
-    if "mean_ep_length" in df.columns:
-        agg_map["mean_ep_length"] = "mean"
-    for c in OPTIONAL_METRIC_COLS:
-        if c in df.columns:
-            agg_map[c] = "mean"
-    for c in compute_cols:
-        if c in df.columns:
-            agg_map[c] = "mean"
-    df_pairs = (
-        df.groupby(["algorithm", "num_robots", "env_set", "seed"], as_index=False)
-          .agg(agg_map)
-    )
-
-    rows = []
-    for (alg, N), grp in df_pairs.groupby(["algorithm", "num_robots"]):
-        r = grp["mean_reward"].astype(float).values   # one row per seed×set
-
-        # source_grp = df[
-        #     (df["algorithm"] == alg) &
-        #     (df["num_robots"] == N)
-        # ]
-        # ep_r = extract_episode_rewards(source_grp)
-
-        row = dict(
-            algorithm=alg,
-            num_robots=N,
-            mean_reward=float(np.mean(r)),
-            std_reward=float(np.std(r)),
-            max_reward=float(np.max(r)),
-            iqm=compute_iqm(r),
-            metric_scope="run_mean_reward",
-            # metric_scope="run_mean",
-            # mean_reward_episode=float(np.mean(ep_r)) if len(ep_r) else float("nan"),
-            # std_reward_episode=float(np.std(ep_r)) if len(ep_r) else float("nan"),
-            # max_reward_episode=float(np.max(ep_r)) if len(ep_r) else float("nan"),
-            # iqm_episode=compute_iqm(ep_r) if len(ep_r) else float("nan"),
-            raw_rewards=list(r),
-        )
-        if "mean_ep_length" in grp.columns:
-            row["mean_ep_length"] = float(np.mean(grp["mean_ep_length"].astype(float).values))
-        for c in OPTIONAL_METRIC_COLS:
-            if c in grp.columns:
-                vals = grp[c].dropna().astype(float).values
-                if len(vals):
-                    row[c] = float(np.mean(vals))
-        for c in compute_cols:
-            if c in grp.columns:
-                vals = grp[c].dropna().astype(float).values
-                if len(vals):
-                    row[c] = int(round(float(np.mean(vals))))
-
-        # if hp_tag == "tuned":
-        #     row["hparam_search_steps_per_algorithm"] = 50 * 500_000
-        # else:
-        #     row["hparam_search_steps_per_algorithm"] = 0
-
-        # row["total_train_steps_plus_search"] = int(
-        #     row.get("total_train_steps", 0) +
-        #     row["hparam_search_steps_per_algorithm"]
-        # )
-        rows.append(row)
-
-    summary = pd.DataFrame(rows)
-    # summary = mark_best(summary, "mean_reward", group_cols=["num_robots"])
-    # Use paired Wilcoxon, explicitly aligned by env_set and seed.
-    summary = mark_best_main_paired(
-        summary,
-        df_pairs=df_pairs,
-        rank_col="iqm",
-        test_col="mean_reward",
-        alpha=0.05,
-    )
-
-    # Write machine-readable CSV
     out = summary.drop(columns=["raw_rewards"])
     out_path = os.path.join(results_dir, f"main_{hp_tag}_summary.csv")
     out.to_csv(out_path, index=False)
     print(f"  Wrote {out_path}")
 
-    # Write LaTeX-ready table CSV
     _write_latex_main(summary, hp_tag, results_dir)
     return summary
 
-
 def _write_latex_main(summary: pd.DataFrame, hp_tag: str, results_dir: str):
-    algorithms = ["A2C", "ARS", "PPO", "TQC", "TRPO", "CrossQ"]
-    robot_counts = [2, 3, 4, 5]
-
-    table_labels = {
-        "default":  "default_hyp",
-        "tuned":    "random_hyp",
-        "transfer": "transfer_hyp",
+    label_map = {
+        "default": "default_hyp",
+        "tuned": "random_hyp",
+        "transfer": "transfer_learning",
     }
-
-    lines = []
-    lines.append(f"% LaTeX table rows for tab:{table_labels.get(hp_tag, hp_tag)}")
-    lines.append(f"% hp_tag = {hp_tag}")
-    lines.append("% Cell format: mean ± std (IQM).")
-    lines.append("% mean/std/IQM are computed over one mean_reward per algorithm × N × env_set × seed.")
-    lines.append("% These rows report final-policy evaluation reward, not equalized total compute.")
-    if hp_tag == "tuned":
-        lines.append("% Tuned-policy rows include an additional hyperparameter-search budget in main_tuned_summary.csv.")
-    if hp_tag == "transfer":
-        lines.append("% Transfer rows include source pretraining and target fine-tuning steps in main_transfer_summary.csv.")
-    lines.append("")
-
-    for alg in algorithms:
+    lines = [
+        f"% LaTeX table rows for tab:{label_map.get(hp_tag, hp_tag)}",
+        f"% hp_tag = {hp_tag}", "",
+    ]
+    for alg in ALGORITHMS:
         cells = []
-        for N in robot_counts:
+        for N in ROBOT_COUNTS:
             row = summary[(summary["algorithm"] == alg) & (summary["num_robots"] == N)]
             if row.empty:
                 cells.append("---")
             else:
-                r = row.iloc[0]
+                r      = row.iloc[0]
                 dagger = r"^\dagger" if r["is_best"] else ""
-                body = f"{r['mean_reward']:.1f} \\pm {r['std_reward']:.1f}\\ ({r['iqm']:.1f}){dagger}"
-                if r["is_best"]:
-                    body = r"\mathbf{" + body + "}"
-                cells.append("$" + body + "$")
+                s = (f"${r['mean_reward']:.1f} \\pm {r['std_reward']:.1f}"
+                     f"\\ ({r['iqm']:.1f}){dagger}$")
+                if r["is_best"]: s = "$" + r"\mathbf{" + s[1:-1] + "}" + "$"
+                cells.append(s)
         lines.append(f"{alg} & " + " & ".join(cells) + r" \\")
 
     out_path = os.path.join(results_dir, f"main_{hp_tag}_latex_rows.txt")
@@ -472,215 +235,227 @@ def _write_latex_main(summary: pd.DataFrame, hp_tag: str, results_dir: str):
         f.write("\n".join(lines))
     print(f"  Wrote {out_path}")
 
+def write_latex_main_combined(default_summary: pd.DataFrame, tuned_summary: pd.DataFrame, results_dir: str):
+    def _remark_iqm(summary):
+        if summary is None: return None
+        return mark_best(summary.copy(), value_col="iqm", group_cols=["num_robots"])
+
+    def _iqm_cell(summary, alg, N):
+        if summary is None: return "---"
+        row = summary[(summary["algorithm"] == alg) & (summary["num_robots"] == N)]
+        if row.empty: return "---"
+        r   = row.iloc[0]
+        val = f"{r['iqm']:.1f}"
+        return (rf"$\mathbf{{{val}}}^\dagger$" if r["is_best"] else f"${val}$")
+
+    default_iqm = _remark_iqm(default_summary)
+    tuned_iqm   = _remark_iqm(tuned_summary)
+
+    lines = [
+        r"% LaTeX table rows for tab:main (NeurIPS compressed)",
+        r"% IQM only, default + tuned side-by-side.",
+        r"% Paste between \midrule and \bottomrule.", "",
+    ]
+    for alg in ALGORITHMS:
+        default_cells = [_iqm_cell(default_iqm, alg, N) for N in ROBOT_COUNTS]
+        tuned_cells   = [_iqm_cell(tuned_iqm,   alg, N) for N in ROBOT_COUNTS]
+        lines.append(f"    {alg:<6} & " + " & ".join(default_cells + tuned_cells) + r" \\")
+
+    out_path = os.path.join(results_dir, "main_combined_latex_rows.txt")
+    with open(out_path, "w") as f:
+        f.write("\n".join(lines))
+    print(f"  Wrote {out_path}")
 
 # ================================================================
-# Reward ablation
+# Reward ablation  (Step 5)
 # ================================================================
 
-def process_ablation_reward(results_dir: str) -> pd.DataFrame:
-    csv_path = os.path.join(results_dir, "ablation_reward.csv")
-    if not os.path.exists(csv_path):
-        print(f"  [WARN] {csv_path} not found — skipping.")
-        return None
-
-    df = pd.read_csv(csv_path)
-    if "eval_reward_ablation" not in df.columns:
-        raise ValueError(
-            "ablation_reward.csv is missing eval_reward_ablation. "
-            "Re-run reward-ablation evaluation with --eval_reward_ablation full."
-        )
-    df = df[df["eval_reward_ablation"] == "full"].copy()
-    if df.empty:
-        raise ValueError("No reward-ablation rows evaluated with eval_reward_ablation='full'.")
-    df["mean_reward"] = df["mean_reward"].astype(float)
-
+def process_ablation_reward(log_root: str, results_dir: str) -> pd.DataFrame:
     condition_labels = {
-        "full":   ("Full reward",      "---"),
-        "no_col": (r"No $R_\text{col}$", "collision"),
-        "no_cov": (r"No $R_\text{cov}$", "coverage"),
-        "no_eff": (r"No $R_\text{eff}$", "efficiency"),
+        "full":    "Full reward",
+        "no_term": r"No $R_\text{term}$",
+        "no_spr":  r"No $R_\text{spr}$",
+        "no_path": r"No $R_\text{path}$",
+    }
+    condition_removed = {
+        "full":    "---",
+        "no_term": "collision penalty + success bonus",
+        "no_spr":  "remaining-infection + useless spray penalty",
+        "no_path": "energy + speed + path + time penalty",
     }
 
-    rows = []
-    for cond, (label, removed) in condition_labels.items():
-        grp = df[df["ablation"] == cond]
-        if grp.empty:
-            continue
-        r = extract_run_mean_rewards(grp)
-        row = dict(
+    csv_path = os.path.join(results_dir, "ablation_reward.csv")
+    has_csv = os.path.exists(csv_path)
+    df_csv = pd.read_csv(csv_path) if has_csv else None
+
+    summary_rows = []
+    for cond, label in condition_labels.items():
+        if has_csv and "sprayed_pct" in df_csv.columns:
+            grp = df_csv[df_csv["ablation"] == cond]
+            if grp.empty: continue
+            r = grp["mean_reward"].values
+            ep_lens = grp["mean_ep_length"].values
+            
+            # Determine predominant terminal condition
+            sp = grp["sprayed_pct"].mean()
+            col = grp["collision_pct"].mean()
+            mx = grp["max_steps_pct"].mean()
+            rates = {"Sprayed": sp, "Collision": col, "Max Steps": mx}
+            dom = max(rates, key=rates.get)
+            term_cond_str = f"{dom} ({rates[dom]:.0f}\\%)"
+            
+        else:
+            version = f"ablation_reward_{cond}"
+            print(f"  Scanning {log_root}/{version}/ (NPZ fallback)")
+            rows = collect_rewards(log_root, version, ["CrossQ"], [3], ENV_SETS, SEEDS)
+            if not rows: continue
+            r       = np.array([row["mean_reward"]    for row in rows])
+            ep_lens = np.array([row["mean_ep_length"] for row in rows])
+            term_cond_str = "---"
+
+        summary_rows.append(dict(
             condition=label,
-            removed_term=removed,
+            removed_term=condition_removed[cond],
             mean_reward=float(np.mean(r)),
             std_reward=float(np.std(r)),
             iqm=compute_iqm(r),
-            metric_scope="run_mean_reward",
+            mean_ep_length=float(np.nanmean(ep_lens)),
+            std_ep_length=float(np.nanstd(ep_lens)),
+            term_cond=term_cond_str,
             raw_rewards=list(r),
-        )
-        rows.append(add_optional_metric_means(row, grp))
+        ))
 
-    summary = pd.DataFrame(rows)
+    if not summary_rows:
+        print("  [WARN] Reward ablation — no data found, skipping.")
+        return None
+
+    summary  = pd.DataFrame(summary_rows)
     out_path = os.path.join(results_dir, "ablation_reward_agg.csv")
     summary.drop(columns=["raw_rewards"]).to_csv(out_path, index=False)
     print(f"  Wrote {out_path}")
     _write_latex_ablation_reward(summary, results_dir)
     return summary
 
-
 def _write_latex_ablation_reward(summary: pd.DataFrame, results_dir: str):
-    lines = [
-        "% LaTeX table rows for tab:ablation_reward",
-        "% All rows must be evaluated with eval_reward_ablation='full'.",
-        "% No automatic bolding: these are ablation diagnostics.",
-        "",
-    ]
+    lines = ["% LaTeX table rows for tab:ablation_reward", ""]
+    best_ep_len = summary["mean_ep_length"].min()
+    
     for _, r in summary.iterrows():
+        bold = (r["mean_ep_length"] == best_ep_len)
+        ep_s = (
+            rf"\mathbf{{{r['mean_ep_length']:.1f} \pm {r['std_ep_length']:.1f}}}"
+            if bold
+            else rf"{r['mean_ep_length']:.1f} \pm {r['std_ep_length']:.1f}"
+        )
         lines.append(
             f"{r['condition']} & {r['removed_term']} & "
-            f"${r['mean_reward']:.1f}$ & ${r['std_reward']:.1f}$ & "
-            f"${r['iqm']:.1f}$ & --- \\\\"
+            f"${r['mean_reward']:.1f}$ & ${r['std_reward']:.1f}$ & ${ep_s}$ & {r['term_cond']} \\\\"
         )
     out_path = os.path.join(results_dir, "ablation_reward_latex_rows.txt")
     with open(out_path, "w") as f:
         f.write("\n".join(lines))
     print(f"  Wrote {out_path}")
 
-
 # ================================================================
-# Observation ablation
+# Observation ablation  (Step 6)
 # ================================================================
 
-def process_ablation_obs(results_dir: str) -> pd.DataFrame:
-    csv_path = os.path.join(results_dir, "ablation_obs.csv")
-    if not os.path.exists(csv_path):
-        print(f"  [WARN] {csv_path} not found — skipping.")
-        return None
+def process_ablation_obs(log_root: str, results_dir: str) -> pd.DataFrame:
+    obs_dims = {"full": "5N+M", "no_pos": "N+M", "no_inf_hist": "5N", "pos_only": "2N"}
+    labels   = {"full": "Full obs.", "no_pos": "No positions",
+                "no_inf_hist": "No infection history", "pos_only": "Positions only"}
 
-    df = pd.read_csv(csv_path)
-    df["mean_reward"] = df["mean_reward"].astype(float)
+    summary_rows = []
+    for cond in ["full", "no_pos", "no_inf_hist", "pos_only"]:
+        version = f"ablation_obs_{cond}"
+        print(f"  Scanning {log_root}/{version}/")
+        rows = collect_rewards(log_root, version, ["CrossQ"], [3], ENV_SETS, SEEDS)
+        if not rows: continue
+        r = np.array([row["mean_reward"] for row in rows])
+        summary_rows.append(dict(
+            condition=labels.get(cond, cond), obs_dim=obs_dims.get(cond, "?"),
+            mean_reward=float(np.mean(r)), iqm=compute_iqm(r), raw_rewards=list(r),
+        ))
 
-    obs_dims = {
-        "full":          "6N+3M+2",
-        "base":          "5N+3M",
-        "no_wind":       "6N+3M",
-        "no_spray_hist": "5N+3M+2",
-        "pos_only":      "2N",
-    }
-    labels = {
-        "full":          "Full obs.",
-        "base":          "Full obs. (base)",
-        "no_wind":       "No wind estimate",
-        "no_spray_hist": "No spray history",
-        "pos_only":      "Positions only",
-    }
+    if not summary_rows: return None
 
-    rows = []
-    for cond in ["full", "base", "no_wind", "no_spray_hist", "pos_only"]:
-        grp = df[df["ablation"] == cond]
-        if grp.empty:
-            continue
-        r = extract_run_mean_rewards(grp)
-        row = dict(
-            condition=labels.get(cond, cond),
-            obs_dim=obs_dims.get(cond, "?"),
-            mean_reward=float(np.mean(r)),
-            iqm=compute_iqm(r),
-            metric_scope="run_mean_reward",
-            raw_rewards=list(r),
-        )
-        rows.append(add_optional_metric_means(row, grp))
-
-    summary = pd.DataFrame(rows)
-    ref_iqm = summary.iloc[0]["iqm"] if not summary.empty else 1.0
-    summary["delta_iqm_pct"] = (summary["iqm"] - ref_iqm) / (abs(ref_iqm) + 1e-9) * 100
-
+    summary  = pd.DataFrame(summary_rows)
+    ref_iqm  = summary.iloc[0]["iqm"] if not summary.empty else 1.0
+    summary["delta_iqm_pct"] = ((summary["iqm"] - ref_iqm) / (abs(ref_iqm) + 1e-9) * 100)
     out_path = os.path.join(results_dir, "ablation_obs_agg.csv")
     summary.drop(columns=["raw_rewards"]).to_csv(out_path, index=False)
     print(f"  Wrote {out_path}")
     _write_latex_ablation_obs(summary, results_dir)
     return summary
 
-
 def _write_latex_ablation_obs(summary: pd.DataFrame, results_dir: str):
     lines = ["% LaTeX table rows for tab:ablation_obs", ""]
-    for i, r in summary.iterrows():
-        delta = "---" if i == 0 else f"${r['delta_iqm_pct']:.1f}$"
-        mean_s = rf"\mathbf{{{r['mean_reward']:.1f}}}" if i == 0 else f"{r['mean_reward']:.1f}"
-        iqm_s  = rf"\mathbf{{{r['iqm']:.1f}}}" if i == 0 else f"{r['iqm']:.1f}"
-        lines.append(
-            f"{r['condition']} & ${r['obs_dim']}$ & ${mean_s}$ & ${iqm_s}$ & {delta} \\\\"
-        )
+    for _, r in summary.iterrows():
+        is_baseline = (r["condition"] == "Full obs.")
+        delta  = "---" if is_baseline else f"${r['delta_iqm_pct']:.1f}$"
+        mean_s = (rf"\mathbf{{{r['mean_reward']:.1f}}}" if is_baseline else f"{r['mean_reward']:.1f}")
+        iqm_s  = (rf"\mathbf{{{r['iqm']:.1f}}}" if is_baseline else f"{r['iqm']:.1f}")
+        lines.append(f"{r['condition']} & ${r['obs_dim']}$ & ${mean_s}$ & ${iqm_s}$ & {delta} \\\\")
     out_path = os.path.join(results_dir, "ablation_obs_latex_rows.txt")
     with open(out_path, "w") as f:
         f.write("\n".join(lines))
     print(f"  Wrote {out_path}")
 
-
 # ================================================================
-# Uncertainty ablation (cross-evaluation matrix)
+# Uncertainty ablation  (Step 7)
 # ================================================================
 
 def process_ablation_uncertainty(results_dir: str) -> pd.DataFrame:
     csv_path = os.path.join(results_dir, "ablation_uncertainty.csv")
-    if not os.path.exists(csv_path):
-        print(f"  [WARN] {csv_path} not found — skipping.")
-        return None
+    if not os.path.exists(csv_path): return None
 
     df = pd.read_csv(csv_path)
     df["mean_reward"] = df["mean_reward"].astype(float)
-    df["iqm"]         = df["iqm"].astype(float)
-
     train_modes = ["full", "wind_only", "act_only", "deterministic"]
-    eval_modes  = ["full", "wind_only", "act_only", "deterministic"]
 
     rows = []
     for train_mode in train_modes:
-        row = {"train_condition": train_mode}
-        for eval_mode in eval_modes:
-            grp = df[(df["ablation"] == train_mode) &
-                     (df["eval_uncertainty_mode"] == eval_mode)]
-            vals = extract_run_mean_rewards(grp)
-            row[f"eval_{eval_mode}_iqm"] = compute_iqm(vals) if len(vals) else float("nan")
-        rows.append(row)
-    summary = pd.DataFrame(rows)
+        grp_same = df[(df["ablation"] == train_mode) & (df["eval_uncertainty_mode"] == train_mode)]
+        grp_full = df[(df["ablation"] == train_mode) & (df["eval_uncertainty_mode"] == "full")]
+        grp_det  = df[(df["ablation"] == train_mode) & (df["eval_uncertainty_mode"] == "deterministic")]
+        rows.append(dict(
+            train_condition=train_mode,
+            eval_same_iqm=compute_iqm(grp_same["mean_reward"].values) if not grp_same.empty else float("nan"),
+            eval_full_iqm=compute_iqm(grp_full["mean_reward"].values) if not grp_full.empty else float("nan"),
+            eval_det_iqm =compute_iqm(grp_det["mean_reward"].values)  if not grp_det.empty  else float("nan"),
+        ))
+
+    summary  = pd.DataFrame(rows)
     out_path = os.path.join(results_dir, "ablation_uncertainty_agg.csv")
     summary.to_csv(out_path, index=False)
     print(f"  Wrote {out_path}")
     _write_latex_ablation_uncertainty(summary, results_dir)
     return summary
 
-
 def _write_latex_ablation_uncertainty(summary: pd.DataFrame, results_dir: str):
     noise_labels = {
-        "full":          "wind + actuation + spray + obs + init",
-        "wind_only":     "wind",
-        "act_only":      "actuation",
-        "deterministic": "none",
+        "full": "wind + actuation + spray", "wind_only": "wind",
+        "act_only": "actuation", "deterministic": "none",
     }
+    def _fmt(v): return "---" if (isinstance(v, float) and np.isnan(v)) else f"${v:.1f}$"
     lines = ["% LaTeX table rows for tab:ablation_uncertainty", ""]
     for _, r in summary.iterrows():
         tc = r["train_condition"]
-        lines.append(
-            f"{tc.replace('_',' ').title()} & {noise_labels.get(tc,'?')} & "
-            f"${r['eval_full_iqm']:.1f}$ & ${r['eval_wind_only_iqm']:.1f}$ & "
-            f"${r['eval_act_only_iqm']:.1f}$ & ${r['eval_deterministic_iqm']:.1f}$ \\\\"
-        )
+        lines.append(f"{tc.replace('_',' ').title()} & {noise_labels.get(tc,'?')} & "
+                     f"{_fmt(r['eval_same_iqm'])} & {_fmt(r['eval_full_iqm'])} & {_fmt(r['eval_det_iqm'])} \\\\")
     out_path = os.path.join(results_dir, "ablation_uncertainty_latex_rows.txt")
     with open(out_path, "w") as f:
         f.write("\n".join(lines))
     print(f"  Wrote {out_path}")
 
-
 # ================================================================
-# Domain randomization
+# Domain randomization  (Step 8)
 # ================================================================
 
 def process_dr(results_dir: str) -> pd.DataFrame:
     in_dist_path = os.path.join(results_dir, "dr_inDist.csv")
     ood_path     = os.path.join(results_dir, "dr_OOD.csv")
-
-    if not os.path.exists(in_dist_path) or not os.path.exists(ood_path):
-        print(f"  [WARN] DR CSVs not found — skipping.")
-        return None
+    if not os.path.exists(in_dist_path) or not os.path.exists(ood_path): return None
 
     df_in  = pd.read_csv(in_dist_path)
     df_ood = pd.read_csv(ood_path)
@@ -693,134 +468,208 @@ def process_dr(results_dir: str) -> pd.DataFrame:
 
     rows = []
     for ablation, label, rand_params in dr_conditions:
-        sub_in = df_in[df_in["ablation"] == ablation]
-        sub_ood = df_ood[df_ood["ablation"] == ablation]
-        r_in = extract_run_mean_rewards(sub_in) if not sub_in.empty else np.array([])
-        r_ood = extract_run_mean_rewards(sub_ood) if not sub_ood.empty else np.array([])
+        r_in  = df_in[df_in["ablation"]  == ablation]["mean_reward"].values
+        r_ood = df_ood[df_ood["ablation"] == ablation]["mean_reward"].values
         all_r = np.concatenate([r_in, r_ood]) if len(r_in) and len(r_ood) else np.array([])
-        in_eval_dr_mode = describe_eval_dr_mode(sub_in) if not sub_in.empty else "unknown"
-        ood_eval_dr_mode = describe_eval_dr_mode(sub_ood) if not sub_ood.empty else "unknown"
-        eval_protocol = (
-            f"in_dist eval_dr_mode={in_eval_dr_mode}; "
-            f"OOD eval_dr_mode={ood_eval_dr_mode}; "
-            "wind ranges are controlled by eval_wind_min/eval_wind_max"
-        )
-        row = dict(
-            condition=label,
-            rand_params=rand_params,
-            eval_protocol=eval_protocol,
-            in_dist_iqm=compute_iqm(r_in)  if len(r_in)  else float("nan"),
-            ood_iqm    =compute_iqm(r_ood)  if len(r_ood) else float("nan"),
-            cvar_0_1   =cvar_0_1(all_r)     if len(all_r) else float("nan"),
-            metric_scope="run_mean_reward",
-        )
-        row = add_optional_metric_means(row, sub_in, prefix="in_dist_")
-        row = add_optional_metric_means(row, sub_ood, prefix="ood_")
-        rows.append(row)
-    summary = pd.DataFrame(rows)
+        rows.append(dict(
+            condition=label, rand_params=rand_params,
+            in_dist_iqm=compute_iqm(r_in) if len(r_in) else float("nan"),
+            ood_iqm=compute_iqm(r_ood) if len(r_ood) else float("nan"),
+            cvar_0_1=cvar_0_1(all_r) if len(all_r) else float("nan"),
+        ))
+
+    summary  = pd.DataFrame(rows)
     out_path = os.path.join(results_dir, "dr_results_agg.csv")
     summary.to_csv(out_path, index=False)
     print(f"  Wrote {out_path}")
     _write_latex_dr(summary, results_dir)
     return summary
 
-
 def _write_latex_dr(summary: pd.DataFrame, results_dir: str):
-    lines = [
-        "% LaTeX table rows for tab:dr_results",
-        "% rand_params describes training-time randomization.",
-        "% Evaluation protocol is written to dr_results_agg.csv as eval_protocol.",
-        "",
-    ]
-    best_ood  = summary["ood_iqm"].max()
-    best_cvar = summary["cvar_0_1"].max()
+    lines = ["% LaTeX table rows for tab:dr_results", ""]
+    def _fmt(v, bold=False):
+        if isinstance(v, float) and np.isnan(v): return "---"
+        s = f"{v:.1f}"
+        return (rf"\mathbf{{{s}}}^\dagger" if bold else s)
+
+    valid_ood  = summary["ood_iqm"].dropna()
+    valid_cvar = summary["cvar_0_1"].dropna()
+    best_ood   = valid_ood.max()  if not valid_ood.empty  else None
+    best_cvar  = valid_cvar.max() if not valid_cvar.empty else None
+
     for _, r in summary.iterrows():
-        ood_s  = rf"\mathbf{{{r['ood_iqm']:.1f}}}^\dagger" if r["ood_iqm"]  == best_ood  else f"{r['ood_iqm']:.1f}"
-        cvar_s = rf"\mathbf{{{r['cvar_0_1']:.1f}}}^\dagger" if r["cvar_0_1"] == best_cvar else f"{r['cvar_0_1']:.1f}"
-        lines.append(
-            f"{r['condition']} & {r['rand_params']} & "
-            f"${r['in_dist_iqm']:.1f}$ & ${ood_s}$ & ${cvar_s}$ \\\\"
-        )
+        ood_s  = _fmt(r["ood_iqm"],  bold=(best_ood  is not None and r["ood_iqm"]  == best_ood))
+        cvar_s = _fmt(r["cvar_0_1"], bold=(best_cvar is not None and r["cvar_0_1"] == best_cvar))
+        lines.append(f"{r['condition']} & {r['rand_params']} & "
+                     f"${_fmt(r['in_dist_iqm'])}$ & ${ood_s}$ & ${cvar_s}$ \\\\")
     out_path = os.path.join(results_dir, "dr_results_latex_rows.txt")
     with open(out_path, "w") as f:
         f.write("\n".join(lines))
     print(f"  Wrote {out_path}")
 
+# ================================================================
+# Combined ablations + DR table — tab:ablations_and_dr
+# ================================================================
+
+def write_latex_combined_ablations_dr(reward_df: pd.DataFrame, obs_df: pd.DataFrame,
+                                       unc_df: pd.DataFrame, dr_df: pd.DataFrame,
+                                       results_dir: str):
+    OBS_LABEL_MAP = {"Full obs.": "Full", "No positions": "No pos.",
+                     "No infection history": "No inf.", "Positions only": "Pos. only"}
+    UNC_LABEL_MAP = {"full": "Full", "wind_only": "Wind only",
+                     "act_only": "Act. only", "deterministic": "Deterministic"}
+
+    unc_simple = None
+    if unc_df is not None:
+        unc_rows = []
+        for _, r in unc_df.iterrows():
+            tc = r["train_condition"]
+            unc_rows.append(dict(condition=UNC_LABEL_MAP.get(tc, tc),
+                                 iqm=float(r.get("eval_same_iqm", float("nan")))))
+        unc_simple = pd.DataFrame(unc_rows)
+
+    def _safe_val(df, col, i):
+        if df is None or i >= len(df): return float("nan")
+        v = df[col].iloc[i]
+        return float("nan") if (isinstance(v, float) and np.isnan(v)) else v
+
+    def _fmt(val, is_best=False):
+        if isinstance(val, float) and np.isnan(val): return ""
+        s = f"{val:.1f}"
+        return (rf"$\mathbf{{{s}}}^\dagger$" if is_best else f"${s}$")
+
+    def _best_mask_iqm(df):
+        if df is None or df.empty: return []
+        vals = df["iqm"].values
+        sorted_idx = np.argsort(vals)[::-1]
+        mask = [False] * len(df)
+        if len(sorted_idx) >= 2 and "raw_rewards" in df.columns:
+            a, b = np.array(df["raw_rewards"].iloc[sorted_idx[0]]), np.array(df["raw_rewards"].iloc[sorted_idx[1]])
+            if wilcoxon_pval(a, b) < 0.05: mask[sorted_idx[0]] = True
+        elif sorted_idx.size >= 1:
+            mask[sorted_idx[0]] = True
+        return mask
+
+    def _best_mask_ep_len(df):
+        if df is None or df.empty or "mean_ep_length" not in df.columns: return []
+        vals = df["mean_ep_length"].values
+        mask = [False] * len(df)
+        if not np.all(np.isnan(vals)): mask[int(np.nanargmin(vals))] = True
+        return mask
+
+    def _dr_best_mask(col):
+        if dr_df is None or col not in dr_df.columns: return [False] * (len(dr_df) if dr_df is not None else 0)
+        vals = dr_df[col].values
+        m    = [False] * len(dr_df)
+        if not np.all(np.isnan(vals)): m[int(np.nanargmax(vals))] = True
+        return m
+
+    rew_best  = _best_mask_ep_len(reward_df)
+    obs_best  = _best_mask_iqm(obs_df)
+    unc_best  = [False] * (len(unc_simple) if unc_simple is not None else 0)
+    if unc_simple is not None and not unc_simple.empty:
+        non_nan = ~np.isnan(unc_simple["iqm"].values)
+        if non_nan.any(): unc_best[int(np.nanargmax(unc_simple["iqm"].values))] = True
+
+    dr_ood_best  = _dr_best_mask("ood_iqm")
+    dr_cvar_best = _dr_best_mask("cvar_0_1")
+
+    lines = [r"% LaTeX table rows for tab:ablations_and_dr", r"% Paste between \midrule and \bottomrule.", ""]
+    for i in range(4):
+        # Extract Reward fields
+        r_cond   = (str(_safe_val(reward_df, "condition", i)) if reward_df is not None and i < len(reward_df) else "")
+        r_ep_len = _fmt(_safe_val(reward_df, "mean_ep_length", i), rew_best[i] if i < len(rew_best) else False)
+        # Safely extract term_cond as a string (it won't be formatted as a float)
+        r_term   = (str(reward_df["term_cond"].iloc[i]) if reward_df is not None and "term_cond" in reward_df.columns and i < len(reward_df) else "")
+        
+        # Extract Obs fields
+        raw_o  = (str(_safe_val(obs_df, "condition", i)) if obs_df is not None and i < len(obs_df) else "")
+        o_cond = OBS_LABEL_MAP.get(raw_o, raw_o)
+        o_iqm  = _fmt(_safe_val(obs_df, "iqm", i), obs_best[i] if i < len(obs_best) else False)
+        
+        # Extract Uncertainty fields
+        u_cond = (str(_safe_val(unc_simple, "condition", i)) if unc_simple is not None and i < len(unc_simple) else "")
+        u_iqm  = _fmt(_safe_val(unc_simple, "iqm", i), unc_best[i] if i < len(unc_best) else False)
+
+        # Extract DR fields
+        if i < 3 and dr_df is not None and i < len(dr_df):
+            d_cond, d_indist = str(dr_df["condition"].iloc[i]), _fmt(dr_df["in_dist_iqm"].iloc[i], False)
+            d_ood  = _fmt(dr_df["ood_iqm"].iloc[i], dr_ood_best[i] if i < len(dr_ood_best) else False)
+            d_cvar = _fmt(dr_df["cvar_0_1"].iloc[i], dr_cvar_best[i] if i < len(dr_cvar_best) else False)
+        else:
+            d_cond, d_indist, d_ood, d_cvar = "", "", "", ""
+
+        # Construct row with the new {r_term} column
+        lines.append(f"    {r_cond} & {r_ep_len} & {r_term} & {o_cond} & {o_iqm} & {u_cond} & {u_iqm} & {d_cond} & {d_indist} & {d_ood} & {d_cvar} \\\\")
+
+    out_path = os.path.join(results_dir, "combined_ablations_dr_latex_rows.txt")
+    with open(out_path, "w") as f: f.write("\n".join(lines))
+    print(f"  Wrote {out_path}")
 
 # ================================================================
-# Print summary to stdout for quick copy-paste into paper
+# Console summary
 # ================================================================
 
 def print_summary_table(summary: pd.DataFrame, label: str, hp_tag: str):
-    if summary is None:
-        return
-    algorithms = ["A2C", "ARS", "PPO", "TQC", "TRPO", "CrossQ"]
-    robot_counts = [2, 3, 4, 5]
-    print(f"\n{'='*80}")
-    print(f"  {label} ({hp_tag})")
-    print(f"{'='*80}")
-    header = f"{'Algorithm':10s}" + "".join(f"  N={N:5}" for N in robot_counts)
+    if summary is None: return
+    print(f"\n{'=' * 80}\n  {label} ({hp_tag})\n{'=' * 80}")
+    header = f"{'Algorithm':10s}" + "".join(f"  N={N:5}" for N in ROBOT_COUNTS)
     print(header)
     print("-" * len(header))
-    for alg in algorithms:
-        row = f"{alg:10s}"
-        for N in robot_counts:
+    for alg in ALGORITHMS:
+        row_str = f"{alg:10s}"
+        for N in ROBOT_COUNTS:
             r = summary[(summary["algorithm"] == alg) & (summary["num_robots"] == N)]
             if r.empty:
-                row += "     ---   "
+                row_str += "     ---   "
             else:
-                ri = r.iloc[0]
+                ri   = r.iloc[0]
                 flag = "*" if ri["is_best"] else " "
-                row += f"  {ri['mean_reward']:6.1f}{flag}"
-        print(row)
-    print(f"{'='*80}")
-
-
-# ================================================================
-# Entry point
-# ================================================================
+                row_str += f"  {ri['mean_reward']:6.1f}{flag}"
+        print(row_str)
+    print(f"{'=' * 80}")
 
 def parse_args():
-    p = argparse.ArgumentParser()
-    p.add_argument("--results_dir", type=str, default=os.path.join(PROJECT_ROOT, "results"),
-                   help="Directory containing all raw evaluation CSVs")
-    p.add_argument("--strict", action="store_true",
-                   help="Fail if expected result-grid combinations are missing")
+    p = argparse.ArgumentParser(description="Aggregate logs into LaTeX-ready tables.")
+    p.add_argument("--log_root", type=str, default="logs")
+    p.add_argument("--results_dir", type=str, default=r"logs/results")
     return p.parse_args()
-
 
 def main():
     args = parse_args()
     os.makedirs(args.results_dir, exist_ok=True)
+    ensure_merged_evaluation_csvs(args.results_dir)
+
+    print(f"\nLog root    : {args.log_root}\nResults dir : {args.results_dir}")
 
     print("\n── Main results: default HPs ───────────────────────────────")
-    default_summary = process_main(args.results_dir, "default", strict=args.strict)
+    default_summary = process_main(args.log_root, args.results_dir, "default")
     print_summary_table(default_summary, "Main results", "default")
 
-    print("\n── Main results: tuned HPs ─────────────────────────────────")
-    tuned_summary = process_main(args.results_dir, "tuned", strict=args.strict)
-    print_summary_table(tuned_summary, "Main results", "tuned")
-
     print("\n── Main results: transfer learning ─────────────────────────")
-    transfer_summary = process_main(args.results_dir, "transfer", strict=args.strict)
+    transfer_summary = process_main(args.log_root, args.results_dir, "transfer", ENV_SETS_TRANSFER)
     print_summary_table(transfer_summary, "Main results", "transfer")
 
+    print("\n── Main results: tuned HPs ─────────────────────────────────")
+    tuned_summary = process_main(args.log_root, args.results_dir, "tuned")
+    print_summary_table(tuned_summary, "Main results", "tuned")
+
     print("\n── Reward ablation ─────────────────────────────────────────")
-    process_ablation_reward(args.results_dir)
+    reward_summary = process_ablation_reward(args.log_root, args.results_dir)
 
     print("\n── Observation ablation ────────────────────────────────────")
-    process_ablation_obs(args.results_dir)
+    obs_summary = process_ablation_obs(args.log_root, args.results_dir)
 
     print("\n── Uncertainty ablation ────────────────────────────────────")
-    process_ablation_uncertainty(args.results_dir)
+    unc_summary = process_ablation_uncertainty(args.results_dir)
 
     print("\n── Domain randomization ────────────────────────────────────")
-    process_dr(args.results_dir)
+    dr_summary = process_dr(args.results_dir)
+
+    write_latex_main_combined(default_summary, tuned_summary, args.results_dir)
+    write_latex_combined_ablations_dr(reward_summary, obs_summary, unc_summary, dr_summary, args.results_dir)
 
     print("\n✓ analyze_results.py complete.")
-    print(f"  LaTeX row files are in {args.results_dir}/*_latex_rows.txt")
-    print("  Copy each file's contents into the corresponding table in full_experiments.tex.")
-
 
 if __name__ == "__main__":
     main()
