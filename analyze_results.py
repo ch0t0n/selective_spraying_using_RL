@@ -2,7 +2,7 @@
 """
 analyze_results.py — Aggregate per-run evaluations.npz files (written by
 SB3's EvalCallback during training) into table-ready summary CSVs that
-directly map to the LaTeX tables in full_experiments.tex.
+directly map to the LaTeX tables in 9. supplementary.tex.
 
 Changes vs previous version
 ----------------------------
@@ -21,6 +21,7 @@ Outputs (written to --results_dir, default "results/"):
 """
 
 import os
+import json
 import argparse
 import numpy as np
 import pandas as pd
@@ -262,6 +263,56 @@ def write_latex_main_combined(default_summary: pd.DataFrame, tuned_summary: pd.D
         lines.append(f"    {alg:<6} & " + " & ".join(default_cells + tuned_cells) + r" \\")
 
     out_path = os.path.join(results_dir, "main_combined_latex_rows.txt")
+    with open(out_path, "w") as f:
+        f.write("\n".join(lines))
+    print(f"  Wrote {out_path}")
+
+
+# ================================================================
+# Best hyperparameters table  (Step 3)
+# ================================================================
+
+def write_latex_best_hyperparams(log_root: str, results_dir: str):
+    """Read logs/best_hyperparams.json and write rows for tab:best_hyperparams."""
+    json_path = os.path.join(log_root, "best_hyperparams.json")
+    if not os.path.exists(json_path):
+        print(f"  [WARN] {json_path} not found — cannot write best HP LaTeX rows.")
+        return
+
+    with open(json_path) as f:
+        data = json.load(f)
+
+    alg_order = ["A2C", "ARS", "PPO", "TRPO", "CrossQ", "TQC"]
+    hp_rows = [
+        (r"Learning rate $\alpha$", "learning_rate"),
+        (r"GAE $\lambda$", "gae_lambda"),
+        (r"$\texttt{vf\_coef}$", "vf_coef"),
+        (r"$\texttt{ent\_coef}$", "ent_coef"),
+        (r"$\texttt{max\_grad\_norm}$", "max_grad_norm"),
+        (r"$\texttt{buffer\_size}$", "buffer_size"),
+    ]
+
+    def _fmt(v):
+        if v is None:
+            return "n/a"
+        if isinstance(v, bool):
+            return str(v)
+        if isinstance(v, int):
+            return str(v)
+        if isinstance(v, float):
+            return f"{v:.3g}"
+        return str(v)
+
+    lines = ["% LaTeX table rows for tab:best_hyperparams", ""]
+    for label, key in hp_rows:
+        cells = []
+        for alg in alg_order:
+            params = data.get(alg, {}).get("params", {})
+            cells.append(_fmt(params.get(key)))
+        lines.append(label + " & " + " & ".join(cells) + r" \\")
+
+    out_path = os.path.join(results_dir, "best_hyperparams_latex_rows.txt")
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     with open(out_path, "w") as f:
         f.write("\n".join(lines))
     print(f"  Wrote {out_path}")
@@ -641,6 +692,9 @@ def main():
     ensure_merged_evaluation_csvs(args.results_dir)
 
     print(f"\nLog root    : {args.log_root}\nResults dir : {args.results_dir}")
+
+    print("\n── Best hyperparameters ───────────────────────────────────")
+    write_latex_best_hyperparams(args.log_root, args.results_dir)
 
     print("\n── Main results: default HPs ───────────────────────────────")
     default_summary = process_main(args.log_root, args.results_dir, "default")
